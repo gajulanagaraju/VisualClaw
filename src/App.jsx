@@ -1,12 +1,16 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
 
 const QUICK_PROMPTS = [
-  { label: '👁 What is this?', text: 'What is this? Tell me something useful.' },
+  { label: '👁 What is this?', text: 'What is this? Tell me the most useful thing about it.' },
   { label: '📋 Read sign', text: 'Read and translate this sign or text for me.' },
-  { label: '🍽 What food?', text: 'What food or dish is this? Is it good in Philippines?' },
+  { label: '🍽 What food?', text: 'What food or dish is this? Is it must-try in Philippines?' },
   { label: '📍 Where am I?', text: 'Based on what you see, where am I? What is this place?' },
-  { label: '💰 Magkano?', text: 'Basaha ang presyo o label. Magkano kini? Maayo ba ang deal?' },
-  { label: '🏆 Event help', text: 'This is from my award ceremony. Read and explain what you see.' },
+  { label: '💰 Magkano?', text: 'Read the price or label. How much is this? Is it a good deal?' },
+  { label: '🏆 Award event', text: 'This is from my Top Performance Conference award event. Read and explain what you see.' },
+  { label: '👔 Outfit check', text: "I'm about to wear this outfit. Does it work for my conference at Shangri-La Boracay? Give honest advice." },
+  { label: '🤝 Who is this?', text: 'Read this person\'s badge or name tag. What role or title do they have? How should I approach them at the conference?' },
+  { label: '🗣 Convo help', text: 'I am in a networking situation at the Top Performance Conference. What is a good conversation opener or topic based on what you see?' },
+  { label: '📸 Photo spot', text: 'Is this a good background for a professional LinkedIn or conference photo? What angle works best?' },
 ]
 
 function resizeImage(dataUrl, maxWidth = 1024) {
