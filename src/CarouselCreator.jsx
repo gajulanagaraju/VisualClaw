@@ -1,4 +1,6 @@
 import { useState, useRef, useCallback } from 'react'
+import { dataUrlsToFiles, webShare, canShareFiles, copyToClipboard, downloadImages, openInstagram, openLinkedIn, openFacebook, openWhatsApp } from './shareUtils.js'
+import { loadConnections } from './SocialSettings.jsx'
 
 const PLATFORMS = [
   { key: 'linkedin',  label: 'LinkedIn',  icon: 'in', color: '#0A66C2', desc: '5–8 slides · Professional', w: 1080, h: 1350 },
@@ -197,6 +199,102 @@ function RenderedSlide({ dataUrl, index, onDownload }) {
   )
 }
 
+/* ── Share Panel ─────────────────────────────── */
+const SHARE_PLATFORMS = [
+  { key: 'instagram', label: 'Instagram', icon: '◎', color: '#E1306C' },
+  { key: 'linkedin',  label: 'LinkedIn',  icon: 'in', color: '#0A66C2' },
+  { key: 'facebook',  label: 'Facebook',  icon: 'f',  color: '#1877F2' },
+  { key: 'whatsapp',  label: 'WhatsApp',  icon: '💬', color: '#25D366' },
+]
+
+function SharePanel({ rendered, caption, platform }) {
+  const [shareState, setShareState] = useState({}) // { platform: 'sharing'|'done'|'error' }
+  const [instruction, setInstruction] = useState(null)
+
+  const setStatus = (key, status) => setShareState(prev => ({ ...prev, [key]: status }))
+
+  const doShare = async (target) => {
+    setStatus(target, 'sharing')
+    setInstruction(null)
+
+    try {
+      const files = await dataUrlsToFiles(rendered)
+
+      if (target === 'whatsapp') {
+        // WhatsApp: share text via wa.me, download images separately
+        await copyToClipboard(caption)
+        downloadImages(rendered, 'whatsapp')
+        setTimeout(() => openWhatsApp(caption), 800)
+        setStatus(target, 'done')
+        setInstruction({ platform: target, text: 'Images saved to device. Caption pre-filled in WhatsApp. Attach the saved images.' })
+        return
+      }
+
+      // Try Web Share API (native share sheet — works on iOS/Android)
+      const shared = await webShare(files, caption, 'TPC 2026 Carousel')
+      if (shared) {
+        setStatus(target, 'done')
+        return
+      }
+
+      // Fallback: download images + copy caption + open app
+      await copyToClipboard(caption)
+      downloadImages(rendered, target)
+
+      if (target === 'instagram') {
+        setInstruction({ platform: 'instagram', text: 'Photos saved to your device. Caption copied! Open Instagram → New Post → select the saved slides in order.' })
+        setTimeout(openInstagram, 600)
+      } else if (target === 'linkedin') {
+        setInstruction({ platform: 'linkedin', text: 'Photos saved. Caption copied! LinkedIn is opening — create a post and upload the slides.' })
+        setTimeout(openLinkedIn, 600)
+      } else if (target === 'facebook') {
+        setInstruction({ platform: 'facebook', text: 'Photos saved. Caption copied! Facebook is opening — create a post and upload the slides.' })
+        setTimeout(openFacebook, 600)
+      }
+      setStatus(target, 'done')
+    } catch (e) {
+      setStatus(target, 'error')
+      console.error('Share error:', e)
+    }
+  }
+
+  return (
+    <div style={sp.panel}>
+      <div style={sp.title}>
+        <span style={sp.titleDot} />
+        Share to Social Media
+      </div>
+      <div style={sp.grid}>
+        {SHARE_PLATFORMS.map(p => {
+          const state = shareState[p.key]
+          return (
+            <button key={p.key}
+              style={{ ...sp.shareBtn, borderColor: `${p.color}40`, ...(state === 'done' ? { background: `${p.color}18` } : {}) }}
+              onClick={() => doShare(p.key)}
+              disabled={state === 'sharing'}>
+              <span style={{ ...sp.shareBtnIcon, color: p.color, background: `${p.color}15` }}>
+                {state === 'sharing' ? '⏳' : state === 'done' ? '✓' : p.icon}
+              </span>
+              <span style={sp.shareBtnLabel}>{p.label}</span>
+            </button>
+          )
+        })}
+      </div>
+
+      {instruction && (
+        <div style={sp.instruction}>
+          <div style={sp.instrText}>{instruction.text}</div>
+        </div>
+      )}
+
+      {canShareFiles()
+        ? <div style={sp.webShareNote}>📱 Native share sheet available — tap a platform above</div>
+        : <div style={sp.webShareNote}>💾 Images will save to your device · caption auto-copied · app will open</div>
+      }
+    </div>
+  )
+}
+
 /* ── Main component ──────────────────────────── */
 export default function CarouselCreator() {
   const [photos, setPhotos]         = useState([])
@@ -205,7 +303,7 @@ export default function CarouselCreator() {
   const [generating, setGenerating] = useState(false)
   const [rendering, setRendering]   = useState(false)
   const [result, setResult]         = useState(null)
-  const [rendered, setRendered]     = useState([]) // final canvas images
+  const [rendered, setRendered]     = useState([])
   const [error, setError]           = useState('')
   const [captionCopied, setCaptionCopied] = useState(false)
   const [hashtagCopied, setHashtagCopied] = useState(false)
@@ -429,6 +527,9 @@ export default function CarouselCreator() {
               </>
             )}
 
+            {/* Share panel */}
+            <SharePanel rendered={rendered} caption={result?.fullCaption || ''} platform={platform} />
+
             <div style={ss.actionRow}>
               <button style={ss.dlBtn} onClick={downloadCaptions}>⬇ Captions .txt</button>
               <button style={ss.resetBtn} onClick={() => { setResult(null); setRendered([]); setPhotos([]) }}>
@@ -591,4 +692,50 @@ const ss = {
   },
   howToTitle: { fontSize: 11, fontWeight: 800, color: '#475569', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 },
   howToText: { fontSize: 12, color: '#64748b', lineHeight: 1.6 },
+}
+
+/* ── Share Panel Styles ──────────────────────── */
+const sp = {
+  panel: {
+    background: 'rgba(10,14,28,0.8)',
+    border: '1px solid rgba(255,255,255,0.08)',
+    borderRadius: 18, padding: '14px 16px 12px',
+    marginBottom: 14,
+    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)',
+  },
+  title: {
+    fontSize: 12, fontWeight: 800, color: '#94a3b8',
+    letterSpacing: 1, textTransform: 'uppercase',
+    marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8,
+  },
+  titleDot: {
+    width: 6, height: 6, borderRadius: '50%',
+    background: '#38bdf8',
+    boxShadow: '0 0 6px rgba(56,189,248,0.8)',
+    flexShrink: 0,
+  },
+  grid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 10 },
+  shareBtn: {
+    display: 'flex', alignItems: 'center', gap: 10,
+    padding: '10px 14px', borderRadius: 14,
+    background: 'rgba(15,20,40,0.6)',
+    border: '1.5px solid rgba(255,255,255,0.06)',
+    cursor: 'pointer',
+    transition: 'all 0.2s cubic-bezier(0.16,1,0.3,1)',
+  },
+  shareBtnIcon: {
+    width: 32, height: 32, borderRadius: 10, flexShrink: 0,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    fontSize: 14, fontWeight: 800,
+  },
+  shareBtnLabel: { fontSize: 13, fontWeight: 700, color: '#e2e8f0' },
+  instruction: {
+    padding: '10px 12px', marginBottom: 8,
+    background: 'rgba(29,78,216,0.12)',
+    border: '1px solid rgba(59,130,246,0.2)',
+    borderRadius: 12,
+    animation: 'fadeInScale 0.3s ease both',
+  },
+  instrText: { fontSize: 12, color: '#93c5fd', lineHeight: 1.6 },
+  webShareNote: { fontSize: 11, color: '#475569', textAlign: 'center' },
 }

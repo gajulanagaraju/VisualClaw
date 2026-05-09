@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
 import CarouselCreator from './CarouselCreator.jsx'
 import SocialFeed from './SocialFeed.jsx'
+import SocialSettings from './SocialSettings.jsx'
 
 /* ── Quick Prompts ───────────────────────────── */
 const QUICK_PROMPTS = [
@@ -266,6 +267,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('camera')
   const [animDir, setAnimDir] = useState('right')
   const [animKey, setAnimKey] = useState(0)
+  const [showSettings, setShowSettings] = useState(false)
   const prevIdx = useRef(0)
 
   const switchTab = (key) => {
@@ -291,8 +293,15 @@ export default function App() {
         </div>
         <div style={app.headerRight}>
           <span style={app.badge}>🇵🇭 TPC 2026</span>
+          <button style={app.settingsBtn} onClick={() => setShowSettings(true)}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </button>
         </div>
       </div>
+
+      {showSettings && <SocialSettings onClose={() => setShowSettings(false)} />}
 
       {/* Content with 3D tab transition */}
       <div style={app.content}>
@@ -352,6 +361,13 @@ const app = {
   },
   logo: { fontSize: 18, fontWeight: 800, letterSpacing: 0.5, color: '#f8fafc' },
   headerRight: { display: 'flex', alignItems: 'center', gap: 8 },
+  settingsBtn: {
+    width: 32, height: 32, borderRadius: '50%',
+    background: 'rgba(255,255,255,0.06)',
+    border: '1px solid rgba(255,255,255,0.1)',
+    color: '#64748b', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    transition: 'all 0.2s ease',
+  },
   badge: {
     fontSize: 11, background: 'rgba(29,78,216,0.4)',
     border: '1px solid rgba(59,130,246,0.4)',
