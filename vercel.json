@@ -2,7 +2,10 @@
   "functions": {
     "api/analyze.js": { "maxDuration": 30 },
     "api/create-carousel.js": { "maxDuration": 60 },
-    "api/social-feed.js": { "maxDuration": 60 }
+    "api/social-feed.js": { "maxDuration": 60 },
+    "api/history-save.js": { "maxDuration": 30 },
+    "api/history-list.js": { "maxDuration": 20 },
+    "api/history-delete.js": { "maxDuration": 15 }
   },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },

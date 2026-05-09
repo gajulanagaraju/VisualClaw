@@ -2,6 +2,114 @@ import { useState, useRef, useCallback } from 'react'
 import { dataUrlsToFiles, webShare, canShareFiles, copyToClipboard, downloadImages, openInstagram, openLinkedIn, openFacebook, openWhatsApp } from './shareUtils.js'
 import { loadConnections } from './SocialSettings.jsx'
 
+/* ── Compress image for storage ──────────────── */
+async function compressForStorage(dataUrl, maxWidth = 600) {
+  return new Promise(resolve => {
+    const img = new Image()
+    img.onload = () => {
+      const ratio = Math.min(1, maxWidth / img.width)
+      const c = document.createElement('canvas')
+      c.width = Math.round(img.width * ratio)
+      c.height = Math.round(img.height * ratio)
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height)
+      resolve(c.toDataURL('image/jpeg', 0.82))
+    }
+    img.src = dataUrl
+  })
+}
+
+async function makeThumbnail(dataUrl, maxWidth = 200) {
+  return new Promise(resolve => {
+    const img = new Image()
+    img.onload = () => {
+      const ratio = Math.min(1, maxWidth / img.width)
+      const c = document.createElement('canvas')
+      c.width = Math.round(img.width * ratio)
+      c.height = Math.round(img.height * ratio)
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height)
+      resolve(c.toDataURL('image/jpeg', 0.78))
+    }
+    img.src = dataUrl
+  })
+}
+
+/* ── Reel video creation ─────────────────────── */
+function canRecord() {
+  try {
+    if (typeof MediaRecorder === 'undefined') return false
+    const c = document.createElement('canvas')
+    if (typeof c.captureStream !== 'function') return false
+    return ['video/webm;codecs=vp9', 'video/webm', 'video/mp4'].some(t => MediaRecorder.isTypeSupported(t))
+  } catch { return false }
+}
+
+async function createReelVideo(slides, platform, onProgress) {
+  const dims = { linkedin: [720, 900], instagram: [720, 900], facebook: [720, 720], whatsapp: [720, 1280] }
+  const [W, H] = dims[platform] || [720, 900]
+
+  const canvas = document.createElement('canvas')
+  canvas.width = W; canvas.height = H
+  const ctx = canvas.getContext('2d')
+
+  const mimeType = ['video/webm;codecs=vp9', 'video/webm', 'video/mp4']
+    .find(t => MediaRecorder.isTypeSupported(t)) || 'video/webm'
+
+  const stream = canvas.captureStream(30)
+  const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 3_000_000 })
+  const chunks = []
+  recorder.ondataavailable = e => e.data.size > 0 && chunks.push(e.data)
+  recorder.start(200)
+
+  const SLIDE_MS = 2800
+  const FADE_MS = 450
+
+  const images = await Promise.all(slides.map(url =>
+    new Promise((res, rej) => {
+      const img = new Image(); img.onload = () => res(img); img.onerror = rej; img.src = url
+    })
+  ))
+
+  const drawCentered = (img, zoom = 1) => {
+    const scale = Math.max(W / img.width, H / img.height) * zoom
+    const dw = img.width * scale, dh = img.height * scale
+    ctx.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh)
+  }
+
+  for (let i = 0; i < images.length; i++) {
+    onProgress?.(i + 1, images.length)
+    const img = images[i]
+    const next = images[i + 1] || null
+    const t0 = performance.now()
+
+    await new Promise(resolve => {
+      const frame = () => {
+        const elapsed = performance.now() - t0
+        const progress = Math.min(elapsed / SLIDE_MS, 1)
+        const zoom = i % 2 === 0 ? 1 + 0.055 * progress : 1.055 - 0.055 * progress
+
+        ctx.clearRect(0, 0, W, H)
+        drawCentered(img, zoom)
+
+        if (next && elapsed > SLIDE_MS - FADE_MS) {
+          ctx.globalAlpha = Math.min((elapsed - (SLIDE_MS - FADE_MS)) / FADE_MS, 1)
+          drawCentered(next, 1)
+          ctx.globalAlpha = 1
+        }
+
+        progress < 1 ? requestAnimationFrame(frame) : resolve()
+      }
+      requestAnimationFrame(frame)
+    })
+  }
+
+  await new Promise(r => setTimeout(r, 700))
+  recorder.stop()
+
+  return new Promise(resolve => {
+    recorder.onstop = () => resolve({ blob: new Blob(chunks, { type: mimeType }), mimeType })
+  })
+}
+
 const PLATFORMS = [
   { key: 'linkedin',  label: 'LinkedIn',  icon: 'in', color: '#0A66C2', desc: '5–8 slides · Professional', w: 1080, h: 1350 },
   { key: 'instagram', label: 'Instagram', icon: '◎',  color: '#E1306C', desc: '6–10 slides · Visual',       w: 1080, h: 1350 },
@@ -307,6 +415,13 @@ export default function CarouselCreator() {
   const [error, setError]           = useState('')
   const [captionCopied, setCaptionCopied] = useState(false)
   const [hashtagCopied, setHashtagCopied] = useState(false)
+  // Reel state
+  const [reelPhase, setReelPhase]   = useState(null) // null | 'creating' | 'done' | 'error'
+  const [reelProgress, setReelProgress] = useState({ cur: 0, total: 0 })
+  const [reelUrl, setReelUrl]       = useState(null)
+  const [reelMime, setReelMime]     = useState('video/webm')
+  // Save-to-history state
+  const [savePhase, setSavePhase]   = useState(null) // null | 'saving' | 'saved' | 'error'
   const fileRef = useRef(null)
 
   const handleFiles = useCallback(async files => {
@@ -381,6 +496,63 @@ export default function CarouselCreator() {
       download: `tpc2026_${platform}_captions.txt`,
     })
     a.click()
+  }
+
+  const createReel = async () => {
+    if (!rendered.length) return
+    setReelPhase('creating')
+    setReelUrl(null)
+    try {
+      const { blob, mimeType } = await createReelVideo(
+        rendered, platform,
+        (cur, total) => setReelProgress({ cur, total })
+      )
+      const url = URL.createObjectURL(blob)
+      setReelUrl(url)
+      setReelMime(mimeType)
+      setReelPhase('done')
+    } catch (e) {
+      console.error('Reel error:', e)
+      setReelPhase('error')
+    }
+  }
+
+  const downloadReel = () => {
+    if (!reelUrl) return
+    const ext = reelMime.includes('mp4') ? 'mp4' : 'webm'
+    const a = document.createElement('a')
+    a.href = reelUrl
+    a.download = `tpc2026_${platform}_reel.${ext}`
+    a.click()
+  }
+
+  const saveToHistory = async () => {
+    if (!rendered.length || !result) return
+    setSavePhase('saving')
+    try {
+      const thumbnail = await makeThumbnail(rendered[0], 200)
+      const compressed = await Promise.all(rendered.map(url => compressForStorage(url, 600)))
+      const res = await fetch('/api/history-save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          platform, eventName,
+          caption: result.fullCaption || '',
+          hashtags: result.hashtags || '',
+          slides: compressed,
+          thumbnail,
+          createdAt: new Date().toISOString(),
+        }),
+      })
+      const data = await res.json()
+      if (!data.success) throw new Error(data.error || 'Save failed')
+      setSavePhase('saved')
+      setTimeout(() => setSavePhase(null), 3000)
+    } catch (e) {
+      console.error('Save error:', e)
+      setSavePhase('error')
+      setTimeout(() => setSavePhase(null), 3000)
+    }
   }
 
   const activePlatform = PLATFORMS.find(p => p.key === platform) || PLATFORMS[0]
@@ -490,11 +662,23 @@ export default function CarouselCreator() {
             )}
 
             {/* Slide images */}
-            <div style={{ ...ss.sLabel, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ ...ss.sLabel, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
               <span>Designed Slides ({rendered.length})</span>
-              <button style={ss.dlAllBtn} onClick={downloadAll}>
-                ⬇ Download All JPGs
-              </button>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button style={ss.dlAllBtn} onClick={downloadAll}>⬇ JPGs</button>
+                {/* Save to history */}
+                <button
+                  style={{
+                    ...ss.dlAllBtn,
+                    background: savePhase === 'saved' ? 'rgba(16,185,129,0.2)' : savePhase === 'error' ? 'rgba(239,68,68,0.15)' : 'rgba(124,58,237,0.15)',
+                    border: `1px solid ${savePhase === 'saved' ? 'rgba(16,185,129,0.4)' : savePhase === 'error' ? 'rgba(239,68,68,0.3)' : 'rgba(124,58,237,0.3)'}`,
+                    color: savePhase === 'saved' ? '#34d399' : savePhase === 'error' ? '#fca5a5' : '#a78bfa',
+                  }}
+                  onClick={saveToHistory}
+                  disabled={savePhase === 'saving' || savePhase === 'saved'}>
+                  {savePhase === 'saving' ? '⏳' : savePhase === 'saved' ? '✓ Saved' : savePhase === 'error' ? '✕ Failed' : '💾 Save'}
+                </button>
+              </div>
             </div>
 
             <div style={ss.slidesRow}>
@@ -529,6 +713,70 @@ export default function CarouselCreator() {
 
             {/* Share panel */}
             <SharePanel rendered={rendered} caption={result?.fullCaption || ''} platform={platform} />
+
+            {/* Reel creator */}
+            <div style={ss.reelBox}>
+              <div style={ss.reelHeader}>
+                <div>
+                  <div style={ss.reelTitle}>🎬 Create Reel</div>
+                  <div style={ss.reelSub}>Ken Burns animation · crossfade transitions · ready to post as video</div>
+                </div>
+              </div>
+
+              {reelPhase === null && canRecord() && (
+                <button
+                  style={{ ...ss.genBtn, background: 'linear-gradient(135deg,#7c3aed,#1d4ed8)', marginBottom: 0, padding: '12px' }}
+                  onClick={createReel}>
+                  ▶ Generate Reel
+                </button>
+              )}
+
+              {reelPhase === null && !canRecord() && (
+                <div style={ss.reelUnsupported}>
+                  MediaRecorder not supported on this browser. Download the JPGs and use Instagram/CapCut to combine into a reel.
+                </div>
+              )}
+
+              {reelPhase === 'creating' && (
+                <div style={ss.reelProgress}>
+                  <div style={ss.loadCube} />
+                  <div style={{ marginTop: 10, color: '#a78bfa', fontSize: 13, fontWeight: 600 }}>
+                    Rendering slide {reelProgress.cur} of {reelProgress.total}...
+                  </div>
+                  <div style={{ fontSize: 11, color: '#475569', marginTop: 4 }}>Ken Burns effect · crossfades · encoding video</div>
+                  <div style={ss.reelBar}>
+                    <div style={{ ...ss.reelBarFill, width: `${reelProgress.total ? (reelProgress.cur / reelProgress.total) * 100 : 0}%` }} />
+                  </div>
+                </div>
+              )}
+
+              {reelPhase === 'done' && reelUrl && (
+                <div>
+                  <video
+                    src={reelUrl}
+                    controls
+                    loop
+                    playsInline
+                    style={ss.reelPreview}
+                  />
+                  <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                    <button style={{ ...ss.genBtn, background: 'linear-gradient(135deg,#065f46,#047857)', flex: 1, padding: '11px', marginBottom: 0 }} onClick={downloadReel}>
+                      ⬇ Download Reel
+                    </button>
+                    <button style={{ ...ss.genBtn, background: 'rgba(30,41,59,0.8)', border: '1px solid rgba(255,255,255,0.07)', color: '#94a3b8', flex: 0, padding: '11px 16px', marginBottom: 0 }} onClick={() => { setReelPhase(null); setReelUrl(null) }}>
+                      ↺
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {reelPhase === 'error' && (
+                <div style={ss.reelUnsupported}>
+                  Reel creation failed. Try with fewer slides or use a shorter event name.
+                  <button style={{ marginLeft: 10, color: '#a78bfa', fontSize: 12 }} onClick={() => setReelPhase(null)}>Retry</button>
+                </div>
+              )}
+            </div>
 
             <div style={ss.actionRow}>
               <button style={ss.dlBtn} onClick={downloadCaptions}>⬇ Captions .txt</button>
@@ -692,6 +940,40 @@ const ss = {
   },
   howToTitle: { fontSize: 11, fontWeight: 800, color: '#475569', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 },
   howToText: { fontSize: 12, color: '#64748b', lineHeight: 1.6 },
+  reelBox: {
+    background: 'rgba(10,14,28,0.7)',
+    border: '1px solid rgba(124,58,237,0.2)',
+    borderRadius: 18, padding: '14px 16px',
+    marginBottom: 14,
+  },
+  reelHeader: { marginBottom: 12 },
+  reelTitle: { fontSize: 15, fontWeight: 800, color: '#e2e8f0', marginBottom: 3 },
+  reelSub: { fontSize: 11, color: '#475569' },
+  reelProgress: {
+    display: 'flex', flexDirection: 'column', alignItems: 'center',
+    padding: '16px 0 8px',
+  },
+  reelBar: {
+    width: '100%', height: 4, borderRadius: 2,
+    background: 'rgba(124,58,237,0.15)',
+    marginTop: 12, overflow: 'hidden',
+  },
+  reelBarFill: {
+    height: '100%', borderRadius: 2,
+    background: 'linear-gradient(90deg, #7c3aed, #38bdf8)',
+    transition: 'width 0.4s ease',
+  },
+  reelPreview: {
+    width: '100%', borderRadius: 14, display: 'block',
+    background: '#000', maxHeight: 280, objectFit: 'contain',
+    border: '1px solid rgba(255,255,255,0.08)',
+  },
+  reelUnsupported: {
+    padding: '10px 12px', borderRadius: 10,
+    background: 'rgba(30,41,59,0.5)',
+    border: '1px solid rgba(255,255,255,0.05)',
+    fontSize: 12, color: '#64748b', lineHeight: 1.6,
+  },
 }
 
 /* ── Share Panel Styles ──────────────────────── */

@@ -2,6 +2,7 @@ import { useRef, useState, useCallback, useEffect } from 'react'
 import CarouselCreator from './CarouselCreator.jsx'
 import SocialFeed from './SocialFeed.jsx'
 import SocialSettings from './SocialSettings.jsx'
+import History from './History.jsx'
 
 /* ── Quick Prompts ───────────────────────────── */
 const QUICK_PROMPTS = [
@@ -259,9 +260,10 @@ function CameraView() {
 const TABS = [
   { key: 'camera',   icon: '📸', label: 'Camera' },
   { key: 'carousel', icon: '🎠', label: 'Carousel' },
+  { key: 'history',  icon: '🗂', label: 'History' },
   { key: 'feed',     icon: '📡', label: 'Feed' },
 ]
-const TAB_ORDER = ['camera', 'carousel', 'feed']
+const TAB_ORDER = ['camera', 'carousel', 'history', 'feed']
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('camera')
@@ -308,6 +310,7 @@ export default function App() {
         <div key={animKey} style={{ ...app.page, ...enterAnim }}>
           {activeTab === 'camera'   && <CameraView />}
           {activeTab === 'carousel' && <CarouselCreator />}
+          {activeTab === 'history'  && <History />}
           {activeTab === 'feed'     && <SocialFeed />}
         </div>
       </div>
