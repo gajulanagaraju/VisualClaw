@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 
 /* ── Data ────────────────────────────────────── */
 
@@ -401,24 +401,119 @@ function TalkingPoint({ tp }) {
   )
 }
 
+/* ── Dynamic item card (from server) ────────── */
+function DynamicItem({ item, onDelete }) {
+  const [copied, setCopied] = useState(false)
+  const [delConfirm, setDelConfirm] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  const sectionColor = item.section === 'conversations' ? '#38bdf8'
+    : item.section === 'language' ? '#34d399'
+    : '#818cf8'
+
+  const copy = () => {
+    navigator.clipboard.writeText(item.text).then(() => {
+      setCopied(true); setTimeout(() => setCopied(false), 1800)
+    })
+  }
+
+  const confirmDelete = async () => {
+    if (!delConfirm) { setDelConfirm(true); setTimeout(() => setDelConfirm(false), 3500); return }
+    setDeleting(true)
+    await onDelete(item.id)
+  }
+
+  const timeAgo = (iso) => {
+    const d = (Date.now() - new Date(iso)) / 1000
+    if (d < 3600) return `${Math.round(d / 60)}m ago`
+    if (d < 86400) return `${Math.round(d / 3600)}h ago`
+    return `${Math.round(d / 86400)}d ago`
+  }
+
+  return (
+    <div style={{ ...g.dynCard, borderLeft: `3px solid ${sectionColor}`, animation: 'cardEntrance 0.3s ease both' }}>
+      <div style={g.dynHeader}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1 }}>
+          <span style={{ ...g.dynBadge, background: sectionColor + '20', color: sectionColor }}>
+            {item.section === 'conversations' ? '💬' : item.section === 'language' ? '🇵🇭' : '🎤'}{' '}
+            {item.section?.replace('_', ' ')}
+          </span>
+          {item.source && item.source !== 'api' && (
+            <span style={g.dynSource}>{item.source}</span>
+          )}
+          <span style={g.dynTime}>{timeAgo(item.createdAt)}</span>
+        </div>
+        <button
+          style={{ ...g.dynDelBtn, background: delConfirm ? '#dc2626' : 'transparent', transition: 'background 0.2s' }}
+          onClick={confirmDelete}
+          disabled={deleting}>
+          {deleting ? '⏳' : delConfirm ? '⚠' : '🗑'}
+        </button>
+      </div>
+      <div style={g.dynTitle}>{item.title}</div>
+      <button style={g.dynTextBtn} onClick={copy}>
+        <p style={g.dynText}>{item.text}</p>
+        <span style={{ color: copied ? '#34d399' : '#334155', fontSize: 13, flexShrink: 0 }}>
+          {copied ? '✓' : '⎘'}
+        </span>
+      </button>
+      {item.rawTopic && (
+        <div style={g.dynRaw}>From: "{item.rawTopic}"</div>
+      )}
+    </div>
+  )
+}
+
 /* ── Main Guide component ────────────────────── */
 export default function Guide() {
-  const [view, setView] = useState('convos') // 'convos' | 'language' | 'talking'
+  const [view, setView] = useState('convos') // 'convos' | 'language' | 'talking' | 'added'
+  const [dynamicItems, setDynamicItems] = useState([])
+  const [loadingItems, setLoadingItems] = useState(false)
+  const [addedCount, setAddedCount] = useState(0)
+
+  const loadDynamic = useCallback(async () => {
+    setLoadingItems(true)
+    try {
+      const r = await fetch('/api/guide-items')
+      const data = await r.json()
+      const items = data.items || []
+      setDynamicItems(items)
+      setAddedCount(items.length)
+    } catch { /* blob not set up yet — silent */ }
+    finally { setLoadingItems(false) }
+  }, [])
+
+  useEffect(() => { loadDynamic() }, [loadDynamic])
+
+  const deleteItem = async (id) => {
+    try {
+      await fetch('/api/guide-delete', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      })
+      setDynamicItems(prev => prev.filter(i => i.id !== id))
+      setAddedCount(prev => Math.max(0, prev - 1))
+    } catch { /* silent */ }
+  }
+
+  const views = [
+    { key: 'convos',   label: '💬 Convos' },
+    { key: 'language', label: '🇵🇭 Language' },
+    { key: 'talking',  label: '🎤 Pitches' },
+    { key: 'added',    label: addedCount > 0 ? `📥 Added ${addedCount}` : '📥 Added' },
+  ]
 
   return (
     <div style={g.root}>
       <div style={g.header}>
         <div style={g.title}>📖 Conference Guide</div>
-        <div style={g.subtitle}>Offline · no internet needed · tap phrases to copy</div>
+        <div style={g.subtitle}>Offline · tap phrases to copy · live updates from OpenClaw</div>
       </div>
 
       {/* View switcher */}
       <div style={g.switcher}>
-        {[
-          { key: 'convos', label: '💬 Conversations' },
-          { key: 'language', label: '🇵🇭 Language' },
-          { key: 'talking', label: '🎤 Talking Points' },
-        ].map(v => (
+        {views.map(v => (
           <button key={v.key}
             style={{ ...g.switchBtn, ...(view === v.key ? g.switchBtnActive : {}) }}
             onClick={() => setView(v.key)}>
@@ -432,6 +527,10 @@ export default function Guide() {
         {view === 'convos' && (
           <>
             <div style={g.viewDesc}>Day-by-day openers, follow-ups, and what to avoid</div>
+            {/* Show any research-added conversation items inline at top */}
+            {dynamicItems.filter(i => i.section === 'conversations').map(item => (
+              <DynamicItem key={item.id} item={item} onDelete={deleteItem} />
+            ))}
             {CONVERSATION_DAYS.map(day => <DayCard key={day.day} day={day} />)}
           </>
         )}
@@ -439,6 +538,9 @@ export default function Guide() {
         {view === 'language' && (
           <>
             <div style={g.viewDesc}>Bisaya + Tagalog · tap any phrase to copy it</div>
+            {dynamicItems.filter(i => i.section === 'language').map(item => (
+              <DynamicItem key={item.id} item={item} onDelete={deleteItem} />
+            ))}
             {LANGUAGE_CATEGORIES.map(cat => <LangCard key={cat.cat} cat={cat} />)}
           </>
         )}
@@ -446,7 +548,52 @@ export default function Guide() {
         {view === 'talking' && (
           <>
             <div style={g.viewDesc}>30-second talking points ready to use · tap to copy</div>
+            {dynamicItems.filter(i => i.section === 'talking_points').map(item => (
+              <DynamicItem key={item.id} item={item} onDelete={deleteItem} />
+            ))}
             {RAJU_TALKING_POINTS.map(tp => <TalkingPoint key={tp.topic} tp={tp} />)}
+          </>
+        )}
+
+        {view === 'added' && (
+          <>
+            <div style={g.viewDesc}>Research added via OpenClaw or WhatsApp · tap to copy · swipe to delete</div>
+
+            {loadingItems && (
+              <div style={{ textAlign: 'center', padding: 32, color: '#475569', fontSize: 13 }}>
+                <div style={{ ...g.loadSpin }} />
+                Loading...
+              </div>
+            )}
+
+            {!loadingItems && dynamicItems.length === 0 && (
+              <div style={g.addedEmpty}>
+                <div style={{ fontSize: 40, marginBottom: 14 }}>📥</div>
+                <div style={g.addedEmptyTitle}>No items added yet</div>
+                <div style={g.addedEmptySub}>Send topics from WhatsApp → OpenClaw and they appear here automatically</div>
+                <div style={g.apiBox}>
+                  <div style={g.apiTitle}>API Endpoint</div>
+                  <div style={g.apiCode}>POST /api/guide-update</div>
+                  <div style={g.apiField}>x-api-key: GUIDE_UPDATE_KEY</div>
+                  <div style={g.apiField}>body: {'{ "rawTopic": "your topic" }'}</div>
+                  <div style={{ ...g.apiField, color: '#34d399', marginTop: 8 }}>
+                    → Claude researches it and adds it here
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {!loadingItems && dynamicItems.length > 0 && (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                  <span style={{ fontSize: 12, color: '#475569' }}>{dynamicItems.length} item{dynamicItems.length !== 1 ? 's' : ''} · tap to copy · tap 🗑 twice to delete</span>
+                  <button style={g.refreshBtn} onClick={loadDynamic}>↺ Refresh</button>
+                </div>
+                {dynamicItems.map(item => (
+                  <DynamicItem key={item.id} item={item} onDelete={deleteItem} />
+                ))}
+              </>
+            )}
           </>
         )}
 
@@ -538,6 +685,66 @@ const g = {
   noteText: { fontSize: 11, color: '#475569', lineHeight: 1.4, marginTop: 3 },
   copyDot: { fontSize: 16, marginLeft: 8, paddingTop: 2, flexShrink: 0 },
   copyHint: { fontSize: 10, color: '#334155', textAlign: 'center', marginTop: 6 },
+
+  // Dynamic items
+  dynCard: {
+    background: 'rgba(10,14,28,0.7)',
+    border: '1px solid rgba(255,255,255,0.06)',
+    borderRadius: 14, marginBottom: 10, overflow: 'hidden', padding: '12px 14px',
+  },
+  dynHeader: { display: 'flex', alignItems: 'center', marginBottom: 7 },
+  dynBadge: {
+    fontSize: 10, fontWeight: 800, letterSpacing: 0.5,
+    textTransform: 'uppercase', padding: '3px 8px', borderRadius: 8,
+  },
+  dynSource: { fontSize: 10, color: '#38bdf8', background: 'rgba(56,189,248,0.1)', padding: '2px 7px', borderRadius: 6 },
+  dynTime: { fontSize: 10, color: '#334155', marginLeft: 'auto', marginRight: 8 },
+  dynDelBtn: {
+    width: 28, height: 28, borderRadius: '50%',
+    border: '1px solid rgba(239,68,68,0.2)',
+    color: '#ef4444', fontSize: 13,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
+  dynTitle: { fontSize: 14, fontWeight: 800, color: '#f1f5f9', marginBottom: 7 },
+  dynTextBtn: {
+    display: 'flex', alignItems: 'flex-start', gap: 8, width: '100%', textAlign: 'left',
+    padding: '9px 11px', borderRadius: 10,
+    background: 'rgba(15,20,40,0.5)',
+    border: '1px solid rgba(255,255,255,0.05)',
+  },
+  dynText: { fontSize: 13, color: '#cbd5e1', lineHeight: 1.6, margin: 0, flex: 1, fontStyle: 'italic' },
+  dynRaw: { fontSize: 10, color: '#334155', marginTop: 7, fontStyle: 'italic' },
+
+  // Added view empty state
+  addedEmpty: {
+    display: 'flex', flexDirection: 'column', alignItems: 'center',
+    padding: '40px 20px', textAlign: 'center',
+  },
+  addedEmptyTitle: { fontSize: 17, fontWeight: 700, color: '#475569', marginBottom: 8 },
+  addedEmptySub: { fontSize: 13, color: '#334155', lineHeight: 1.6, marginBottom: 20 },
+  apiBox: {
+    width: '100%', padding: '14px 16px',
+    background: 'rgba(10,14,28,0.8)',
+    border: '1px solid rgba(56,189,248,0.2)',
+    borderRadius: 14, textAlign: 'left',
+  },
+  apiTitle: { fontSize: 10, fontWeight: 800, color: '#38bdf8', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 },
+  apiCode: { fontSize: 13, color: '#f1f5f9', fontFamily: 'monospace', fontWeight: 700, marginBottom: 6 },
+  apiField: { fontSize: 11, color: '#64748b', fontFamily: 'monospace', marginBottom: 3, lineHeight: 1.5 },
+
+  refreshBtn: {
+    fontSize: 11, color: '#475569', padding: '4px 10px',
+    background: 'rgba(15,20,40,0.6)',
+    border: '1px solid rgba(255,255,255,0.06)',
+    borderRadius: 8,
+  },
+  loadSpin: {
+    width: 24, height: 24, borderRadius: '50%',
+    border: '2px solid rgba(56,189,248,0.15)',
+    borderTop: '2px solid #38bdf8',
+    animation: 'spin3D 1s linear infinite',
+    margin: '0 auto 10px',
+  },
 
   // Talking points
   tpCard: {

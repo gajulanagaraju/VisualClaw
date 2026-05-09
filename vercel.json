@@ -5,7 +5,10 @@
     "api/social-feed.js": { "maxDuration": 60 },
     "api/history-save.js": { "maxDuration": 30 },
     "api/history-list.js": { "maxDuration": 20 },
-    "api/history-delete.js": { "maxDuration": 15 }
+    "api/history-delete.js": { "maxDuration": 15 },
+    "api/guide-update.js": { "maxDuration": 30 },
+    "api/guide-items.js": { "maxDuration": 20 },
+    "api/guide-delete.js": { "maxDuration": 15 }
   },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
