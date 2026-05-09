@@ -1,0 +1,15 @@
+import { shangrilaBoracay } from './shangrila-boracay.js'
+import { boracayIsland } from './boracay-island.js'
+import { manila } from './manila.js'
+import { awardCeremony } from './award-ceremony.js'
+import { philippinesPractical } from './philippines-practical.js'
+import { languageGuide } from './language-guide.js'
+
+export const KNOWLEDGE_BASE = [
+  shangrilaBoracay,
+  boracayIsland,
+  manila,
+  awardCeremony,
+  philippinesPractical,
+  languageGuide,
+].join('\n\n---\n\n')
