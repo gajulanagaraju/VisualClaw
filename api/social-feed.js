@@ -153,21 +153,33 @@ async function fetchFromApify(token) {
 
   const data = await response.json()
 
-  return data.map((tweet, i) => ({
-    id: tweet.id || `apify_${i}`,
-    platform: 'twitter',
-    username: `@${tweet.author?.userName || 'unknown'}`,
-    displayName: tweet.author?.name || 'Unknown',
-    avatar: (tweet.author?.name || 'U')[0].toUpperCase(),
-    avatarColor: '#0082F0',
-    text: tweet.text || '',
-    time: tweet.createdAt ? new Date(tweet.createdAt).toLocaleDateString() : 'recent',
-    likes: tweet.likeCount || 0,
-    retweets: tweet.retweetCount || 0,
-    image: tweet.extendedEntities?.media?.[0]?.media_url_https || null,
-    url: tweet.url || '#',
-    verified: tweet.author?.isVerified || false,
-  }))
+  return data
+    .filter(tweet => tweet.text && tweet.text.trim().length > 10)
+    .map((tweet, i) => {
+      const name = tweet.author?.name || tweet.user?.name || 'Unknown'
+      const userName = tweet.author?.userName || tweet.user?.screen_name || 'unknown'
+      const image =
+        tweet.extendedEntities?.media?.[0]?.media_url_https ||
+        tweet.entities?.media?.[0]?.media_url_https ||
+        null
+      return {
+        id: tweet.id || tweet.id_str || `apify_${i}`,
+        platform: 'twitter',
+        username: `@${userName}`,
+        displayName: name,
+        avatar: name[0].toUpperCase(),
+        avatarColor: '#0082F0',
+        text: tweet.text || tweet.full_text || '',
+        time: tweet.createdAt
+          ? new Date(tweet.createdAt).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })
+          : 'recent',
+        likes: tweet.likeCount ?? tweet.favorite_count ?? 0,
+        retweets: tweet.retweetCount ?? tweet.retweet_count ?? 0,
+        image,
+        url: tweet.url || (tweet.id ? `https://x.com/i/web/status/${tweet.id}` : '#'),
+        verified: tweet.author?.isVerified || tweet.user?.verified || false,
+      }
+    })
 }
 
 export default async function handler(req, res) {
