@@ -34,34 +34,157 @@ async function makeThumbnail(dataUrl, maxWidth = 200) {
 }
 
 /* ── Reel video creation ─────────────────────── */
-function canRecord() {
+async function supportsMP4Encoding() {
   try {
-    if (typeof MediaRecorder === 'undefined') return false
-    const c = document.createElement('canvas')
-    if (typeof c.captureStream !== 'function') return false
-    return ['video/webm;codecs=vp9', 'video/webm', 'video/mp4'].some(t => MediaRecorder.isTypeSupported(t))
+    if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') return false
+    const result = await VideoEncoder.isConfigSupported({
+      codec: 'avc1.4D401F', width: 720, height: 900, bitrate: 3_000_000, framerate: 30,
+    })
+    return !!result.supported
   } catch { return false }
 }
 
-async function createReelVideo(slides, platform, onProgress) {
+function canRecord() {
+  try {
+    if (typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined') return true
+    if (typeof MediaRecorder === 'undefined') return false
+    const c = document.createElement('canvas')
+    if (typeof c.captureStream !== 'function') return false
+    return ['video/webm;codecs=vp9', 'video/webm'].some(t => MediaRecorder.isTypeSupported(t))
+  } catch { return false }
+}
+
+async function createReelVideoMP4(slides, mediaItems, platform, onProgress) {
+  const { Muxer, ArrayBufferTarget } = await import('mp4-muxer')
   const dims = { linkedin: [720, 900], instagram: [720, 900], facebook: [720, 720], whatsapp: [720, 1280] }
   const [W, H] = dims[platform] || [720, 900]
+
+  const FPS        = 30
+  const FRAME_MS   = 1000 / FPS
+  const SLIDE_FRAMES = Math.round(2.8 * FPS)
+  const FADE_FRAMES  = Math.round(0.45 * FPS)
+
+  // Pre-load all slides as Images (thumbnails for crossfade targets)
+  const images = await Promise.all(slides.map(url =>
+    new Promise((res, rej) => {
+      const img = new Image(); img.onload = () => res(img); img.onerror = rej; img.src = url
+    })
+  ))
+
+  const target  = new ArrayBufferTarget()
+  const muxer   = new Muxer({ target, video: { codec: 'avc', width: W, height: H }, fastStart: 'in-memory' })
+  const encoder = new VideoEncoder({
+    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+    error:  e => { throw e },
+  })
+  encoder.configure({ codec: 'avc1.4D401F', width: W, height: H, bitrate: 3_000_000, framerate: FPS })
 
   const canvas = document.createElement('canvas')
   canvas.width = W; canvas.height = H
   const ctx = canvas.getContext('2d')
 
-  const mimeType = ['video/webm;codecs=vp9', 'video/webm', 'video/mp4']
-    .find(t => MediaRecorder.isTypeSupported(t)) || 'video/webm'
+  const drawCentered = (src, zoom = 1) => {
+    const srcW = src.videoWidth || src.naturalWidth || src.width || W
+    const srcH = src.videoHeight || src.naturalHeight || src.height || H
+    const scale = Math.max(W / srcW, H / srcH) * zoom
+    const dw = srcW * scale, dh = srcH * scale
+    ctx.drawImage(src, (W - dw) / 2, (H - dh) / 2, dw, dh)
+  }
 
-  const stream = canvas.captureStream(30)
+  const encodeFrame = (totalFrame) => {
+    const ts  = Math.round((totalFrame / FPS) * 1_000_000)
+    const dur = Math.round(1_000_000 / FPS)
+    const vf  = new VideoFrame(canvas, { timestamp: ts, duration: dur })
+    encoder.encode(vf, { keyFrame: totalFrame % (FPS * 2) === 0 })
+    vf.close()
+  }
+
+  let totalFrame = 0
+
+  for (let i = 0; i < images.length; i++) {
+    onProgress?.(i + 1, images.length)
+    const media = mediaItems?.[i]
+    const next  = images[i + 1] || null
+
+    if (media?.isVideo && media.videoSrc) {
+      /* ── Video clip: play in real-time, capture at 30 fps ── */
+      const videoEl = document.createElement('video')
+      videoEl.muted = true
+      videoEl.playsInline = true
+      videoEl.preload = 'auto'
+      videoEl.src = media.videoSrc
+
+      await new Promise((res, rej) => {
+        const start = async () => {
+          try {
+            await videoEl.play()
+            const clipFrames = Math.round(Math.min(media.duration || 5, 10) * FPS)
+            for (let f = 0; f < clipFrames; f++) {
+              const t0 = performance.now()
+              ctx.clearRect(0, 0, W, H)
+              drawCentered(videoEl)
+              if (next && f >= clipFrames - FADE_FRAMES) {
+                ctx.globalAlpha = Math.min((f - (clipFrames - FADE_FRAMES)) / FADE_FRAMES, 1)
+                drawCentered(next, 1)
+                ctx.globalAlpha = 1
+              }
+              encodeFrame(totalFrame++)
+              while (encoder.encodeQueueSize > 10) await new Promise(r => setTimeout(r, 5))
+              const wait = FRAME_MS - (performance.now() - t0)
+              if (wait > 0) await new Promise(r => setTimeout(r, wait))
+            }
+            videoEl.pause()
+            res()
+          } catch (e) { rej(e) }
+        }
+        if (videoEl.readyState >= 3) { start() }
+        else { videoEl.oncanplay = start; videoEl.onerror = rej }
+      })
+
+    } else {
+      /* ── Photo slide: Ken Burns frame-by-frame ── */
+      const img = images[i]
+      for (let f = 0; f < SLIDE_FRAMES; f++) {
+        const progress = f / SLIDE_FRAMES
+        const zoom = i % 2 === 0 ? 1 + 0.055 * progress : 1.055 - 0.055 * progress
+        ctx.clearRect(0, 0, W, H)
+        drawCentered(img, zoom)
+        if (next && f >= SLIDE_FRAMES - FADE_FRAMES) {
+          ctx.globalAlpha = Math.min((f - (SLIDE_FRAMES - FADE_FRAMES)) / FADE_FRAMES, 1)
+          drawCentered(next, 1)
+          ctx.globalAlpha = 1
+        }
+        encodeFrame(totalFrame++)
+        if (f % 15 === 0) await new Promise(r => setTimeout(r, 0))
+      }
+    }
+  }
+
+  // ~700ms hold on last frame
+  const holdFrames = Math.round(0.7 * FPS)
+  for (let f = 0; f < holdFrames; f++) encodeFrame(totalFrame++)
+
+  await encoder.flush()
+  muxer.finalize()
+  return { blob: new Blob([target.buffer], { type: 'video/mp4' }), mimeType: 'video/mp4' }
+}
+
+async function createReelVideoWebM(slides, mediaItems, platform, onProgress) {
+  const dims = { linkedin: [720, 900], instagram: [720, 900], facebook: [720, 720], whatsapp: [720, 1280] }
+  const [W, H] = dims[platform] || [720, 900]
+
+  const canvas   = document.createElement('canvas')
+  canvas.width = W; canvas.height = H
+  const ctx      = canvas.getContext('2d')
+  const mimeType = ['video/webm;codecs=vp9', 'video/webm'].find(t => MediaRecorder.isTypeSupported(t)) || 'video/webm'
+  const stream   = canvas.captureStream(30)
   const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 3_000_000 })
-  const chunks = []
+  const chunks   = []
   recorder.ondataavailable = e => e.data.size > 0 && chunks.push(e.data)
   recorder.start(200)
 
   const SLIDE_MS = 2800
-  const FADE_MS = 450
+  const FADE_MS  = 450
 
   const images = await Promise.all(slides.map(url =>
     new Promise((res, rej) => {
@@ -69,45 +192,90 @@ async function createReelVideo(slides, platform, onProgress) {
     })
   ))
 
-  const drawCentered = (img, zoom = 1) => {
-    const scale = Math.max(W / img.width, H / img.height) * zoom
-    const dw = img.width * scale, dh = img.height * scale
-    ctx.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh)
+  const drawCentered = (src, zoom = 1) => {
+    const srcW = src.videoWidth || src.naturalWidth || src.width || W
+    const srcH = src.videoHeight || src.naturalHeight || src.height || H
+    const scale = Math.max(W / srcW, H / srcH) * zoom
+    const dw = srcW * scale, dh = srcH * scale
+    ctx.drawImage(src, (W - dw) / 2, (H - dh) / 2, dw, dh)
   }
 
   for (let i = 0; i < images.length; i++) {
     onProgress?.(i + 1, images.length)
-    const img = images[i]
-    const next = images[i + 1] || null
-    const t0 = performance.now()
+    const media = mediaItems?.[i]
+    const next  = images[i + 1] || null
 
-    await new Promise(resolve => {
-      const frame = () => {
-        const elapsed = performance.now() - t0
-        const progress = Math.min(elapsed / SLIDE_MS, 1)
-        const zoom = i % 2 === 0 ? 1 + 0.055 * progress : 1.055 - 0.055 * progress
+    if (media?.isVideo && media.videoSrc) {
+      /* ── Video clip: play in real-time, MediaRecorder captures it ── */
+      const videoEl = document.createElement('video')
+      videoEl.muted = true
+      videoEl.playsInline = true
+      videoEl.preload = 'auto'
+      videoEl.src = media.videoSrc
 
-        ctx.clearRect(0, 0, W, H)
-        drawCentered(img, zoom)
-
-        if (next && elapsed > SLIDE_MS - FADE_MS) {
-          ctx.globalAlpha = Math.min((elapsed - (SLIDE_MS - FADE_MS)) / FADE_MS, 1)
-          drawCentered(next, 1)
-          ctx.globalAlpha = 1
+      await new Promise((res, rej) => {
+        const start = async () => {
+          try {
+            const clipMs = Math.min(media.duration || 5, 10) * 1000
+            await videoEl.play()
+            const t0 = performance.now()
+            await new Promise(innerRes => {
+              const frame = () => {
+                const elapsed = performance.now() - t0
+                if (elapsed >= clipMs) { videoEl.pause(); innerRes(); return }
+                ctx.clearRect(0, 0, W, H)
+                drawCentered(videoEl)
+                if (next && elapsed > clipMs - FADE_MS) {
+                  ctx.globalAlpha = Math.min((elapsed - (clipMs - FADE_MS)) / FADE_MS, 1)
+                  drawCentered(next, 1)
+                  ctx.globalAlpha = 1
+                }
+                requestAnimationFrame(frame)
+              }
+              requestAnimationFrame(frame)
+            })
+            res()
+          } catch (e) { rej(e) }
         }
+        if (videoEl.readyState >= 3) { start() }
+        else { videoEl.oncanplay = start; videoEl.onerror = rej }
+      })
 
-        progress < 1 ? requestAnimationFrame(frame) : resolve()
-      }
-      requestAnimationFrame(frame)
-    })
+    } else {
+      /* ── Photo slide: Ken Burns via rAF ── */
+      const img = images[i]
+      const t0  = performance.now()
+      await new Promise(resolve => {
+        const frame = () => {
+          const elapsed  = performance.now() - t0
+          const progress = Math.min(elapsed / SLIDE_MS, 1)
+          const zoom     = i % 2 === 0 ? 1 + 0.055 * progress : 1.055 - 0.055 * progress
+          ctx.clearRect(0, 0, W, H)
+          drawCentered(img, zoom)
+          if (next && elapsed > SLIDE_MS - FADE_MS) {
+            ctx.globalAlpha = Math.min((elapsed - (SLIDE_MS - FADE_MS)) / FADE_MS, 1)
+            drawCentered(next, 1)
+            ctx.globalAlpha = 1
+          }
+          progress < 1 ? requestAnimationFrame(frame) : resolve()
+        }
+        requestAnimationFrame(frame)
+      })
+    }
   }
 
   await new Promise(r => setTimeout(r, 700))
   recorder.stop()
-
   return new Promise(resolve => {
     recorder.onstop = () => resolve({ blob: new Blob(chunks, { type: mimeType }), mimeType })
   })
+}
+
+async function createReelVideo(slides, mediaItems, platform, onProgress) {
+  if (await supportsMP4Encoding()) {
+    return createReelVideoMP4(slides, mediaItems, platform, onProgress)
+  }
+  return createReelVideoWebM(slides, mediaItems, platform, onProgress)
 }
 
 const PLATFORMS = [
@@ -288,6 +456,41 @@ async function prepPhoto(file) {
   })
 }
 
+/* ── Extract thumbnail + metadata from video ─── */
+async function prepVideo(file) {
+  const videoSrc = URL.createObjectURL(file)
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video')
+    video.muted = true
+    video.playsInline = true
+    video.preload = 'metadata'
+    video.onloadedmetadata = () => {
+      video.currentTime = Math.min(0.5, video.duration * 0.1)
+    }
+    video.onseeked = () => {
+      const vw = video.videoWidth || 640
+      const vh = video.videoHeight || 480
+      const scale = Math.min(1, 1200 / Math.max(vw, vh))
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.round(vw * scale)
+      canvas.height = Math.round(vh * scale)
+      canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height)
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.88)
+      resolve({
+        dataUrl,                          // thumbnail shown in grid + used for carousel slide design
+        base64: dataUrl.split(',')[1],    // thumbnail sent to AI for analysis
+        mimeType: 'image/jpeg',
+        name: file.name,
+        isVideo: true,
+        videoSrc,                         // blob URL used for reel playback
+        duration: video.duration,
+      })
+    }
+    video.onerror = () => reject(new Error('Video load failed'))
+    video.src = videoSrc
+  })
+}
+
 function copyText(text, setDone) {
   navigator.clipboard.writeText(text).then(() => { setDone(true); setTimeout(() => setDone(false), 2200) })
 }
@@ -419,21 +622,25 @@ export default function CarouselCreator() {
   const [reelPhase, setReelPhase]   = useState(null) // null | 'creating' | 'done' | 'error'
   const [reelProgress, setReelProgress] = useState({ cur: 0, total: 0 })
   const [reelUrl, setReelUrl]       = useState(null)
-  const [reelMime, setReelMime]     = useState('video/webm')
+  const [reelMime, setReelMime]     = useState('video/mp4')
   // Save-to-history state
   const [savePhase, setSavePhase]   = useState(null) // null | 'saving' | 'saved' | 'error'
+  // Ordered media parallel to rendered[] — tells reel which slots are videos
+  const [orderedMedia, setOrderedMedia] = useState([])
   const fileRef = useRef(null)
 
   const handleFiles = useCallback(async files => {
     const arr = Array.from(files).slice(0, 10)
-    const processed = await Promise.all(arr.map(prepPhoto))
+    const processed = await Promise.all(
+      arr.map(f => f.type.startsWith('video/') ? prepVideo(f) : prepPhoto(f))
+    )
     setPhotos(prev => [...prev, ...processed].slice(0, 10))
-    setResult(null); setRendered([])
+    setResult(null); setRendered([]); setOrderedMedia([])
   }, [])
 
   const generate = async () => {
     if (!photos.length) return
-    setGenerating(true); setError(''); setResult(null); setRendered([])
+    setGenerating(true); setError(''); setResult(null); setRendered([]); setOrderedMedia([])
     try {
       const res = await fetch('/api/create-carousel', {
         method: 'POST',
@@ -461,6 +668,7 @@ export default function CarouselCreator() {
         )
       )
       setRendered(renderedImgs)
+      setOrderedMedia(orderedPhotos)
     } catch (e) {
       setError(e.message || 'Generation failed. Try again.')
     } finally {
@@ -504,7 +712,7 @@ export default function CarouselCreator() {
     setReelUrl(null)
     try {
       const { blob, mimeType } = await createReelVideo(
-        rendered, platform,
+        rendered, orderedMedia, platform,
         (cur, total) => setReelProgress({ cur, total })
       )
       const url = URL.createObjectURL(blob)
@@ -519,7 +727,7 @@ export default function CarouselCreator() {
 
   const downloadReel = () => {
     if (!reelUrl) return
-    const ext = reelMime.includes('mp4') ? 'mp4' : 'webm'
+    const ext = reelMime.includes('webm') ? 'webm' : 'mp4'
     const a = document.createElement('a')
     a.href = reelUrl
     a.download = `tpc2026_${platform}_reel.${ext}`
@@ -573,14 +781,15 @@ export default function CarouselCreator() {
               <div style={ss.uploadOrb} />
               <div style={{ fontSize: 36, marginBottom: 8 }}>🖼</div>
               <div style={ss.uploadText}>Tap to add photos</div>
-              <div style={ss.uploadSub}>Up to 10 photos · text will be overlaid on each slide</div>
+              <div style={ss.uploadSub}>Mix photos + short videos · up to 10 items</div>
             </div>
           ) : (
             <div style={ss.thumbGrid}>
               {photos.map((p, i) => (
                 <div key={i} style={ss.thumbWrap}>
                   <img src={p.dataUrl} alt="" style={ss.thumb} />
-                  <button style={ss.removeBtn} onClick={e => { e.stopPropagation(); setPhotos(prev => prev.filter((_,j)=>j!==i)); setResult(null); setRendered([]) }}>✕</button>
+                  {p.isVideo && <div style={ss.thumbPlayBadge}>▶</div>}
+                  <button style={ss.removeBtn} onClick={e => { e.stopPropagation(); setPhotos(prev => prev.filter((_,j)=>j!==i)); setResult(null); setRendered([]); setOrderedMedia([]) }}>✕</button>
                   <div style={ss.thumbNum}>{i + 1}</div>
                 </div>
               ))}
@@ -593,7 +802,7 @@ export default function CarouselCreator() {
             </div>
           )}
         </div>
-        <input ref={fileRef} type="file" accept="image/*" multiple
+        <input ref={fileRef} type="file" accept="image/*,video/mp4,video/quicktime,video/webm" multiple
           style={{ display: 'none' }} onChange={e => handleFiles(e.target.files)} />
 
         <div style={ss.tip}>
@@ -608,7 +817,7 @@ export default function CarouselCreator() {
             {PLATFORMS.map(p => (
               <button key={p.key}
                 style={{ ...ss.platformBtn, ...(platform === p.key ? { borderColor: p.color, background: `${p.color}18`, boxShadow: `0 0 20px ${p.color}18` } : {}) }}
-                onClick={() => { setPlatform(p.key); setRendered([]) }}>
+                onClick={() => { setPlatform(p.key); setRendered([]); setOrderedMedia([]) }}>
                 <span style={{ fontSize: 18, color: platform === p.key ? p.color : '#64748b' }}>{p.icon}</span>
                 <span style={{ ...ss.pName, color: platform === p.key ? '#f1f5f9' : '#94a3b8' }}>{p.label}</span>
                 <span style={ss.pDesc}>{p.desc}</span>
@@ -719,7 +928,7 @@ export default function CarouselCreator() {
               <div style={ss.reelHeader}>
                 <div>
                   <div style={ss.reelTitle}>🎬 Create Reel</div>
-                  <div style={ss.reelSub}>Ken Burns animation · crossfade transitions · ready to post as video</div>
+                  <div style={ss.reelSub}>H.264 MP4 · photos get Ken Burns · videos play as-is · iPhone & Instagram ready</div>
                 </div>
               </div>
 
@@ -780,7 +989,7 @@ export default function CarouselCreator() {
 
             <div style={ss.actionRow}>
               <button style={ss.dlBtn} onClick={downloadCaptions}>⬇ Captions .txt</button>
-              <button style={ss.resetBtn} onClick={() => { setResult(null); setRendered([]); setPhotos([]) }}>
+              <button style={ss.resetBtn} onClick={() => { setResult(null); setRendered([]); setPhotos([]); setOrderedMedia([]) }}>
                 🔄 New Carousel
               </button>
             </div>
@@ -835,6 +1044,15 @@ const ss = {
     background: 'rgba(239,68,68,0.9)', color: '#fff', fontSize: 9, lineHeight: '18px', textAlign: 'center', fontWeight: 800,
   },
   thumbNum: { position: 'absolute', bottom: 2, left: 4, fontSize: 9, color: 'rgba(255,255,255,0.7)', fontWeight: 700 },
+  thumbPlayBadge: {
+    position: 'absolute', top: '50%', left: '50%',
+    transform: 'translate(-50%,-50%)',
+    fontSize: 18, color: '#fff', pointerEvents: 'none',
+    textShadow: '0 1px 6px rgba(0,0,0,0.9)',
+    background: 'rgba(0,0,0,0.38)', borderRadius: '50%',
+    width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    paddingLeft: 2,
+  },
   addMore: {
     width: 72, height: 72, borderRadius: 10, border: '1.5px dashed rgba(255,255,255,0.1)',
     display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2,
