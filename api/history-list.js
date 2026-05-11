@@ -1,4 +1,4 @@
-import { list, getDownloadUrl } from '@vercel/blob'
+import { list } from '@vercel/blob'
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).end()
@@ -8,7 +8,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    // List all meta.json files (both carousel and reel entries)
+    // List all blobs — for private stores, each blob object includes a `downloadUrl`
+    // which is a pre-signed URL valid for ~1 hour. Use that to fetch the content.
     const { blobs } = await list({ prefix: 'vc-history/', limit: 500 })
     const metaBlobs = blobs.filter(b => b.pathname.endsWith('.meta.json'))
 
@@ -16,36 +17,12 @@ export default async function handler(req, res) {
       await Promise.all(
         metaBlobs.map(async b => {
           try {
-            let data
-
-            // For public stores, b.url is directly accessible.
-            // For private stores, we need a signed download URL.
-            let fetchUrl = b.url
-            try {
-              const r = await fetch(b.url, { cache: 'no-store' })
-              if (r.ok) {
-                data = await r.json()
-              } else if (r.status === 401 || r.status === 403) {
-                // Private store — get a signed download URL
-                fetchUrl = await getDownloadUrl(b.url)
-                const r2 = await fetch(fetchUrl, { cache: 'no-store' })
-                if (!r2.ok) return null
-                data = await r2.json()
-              } else {
-                return null
-              }
-            } catch {
-              // Network error — try signed URL as fallback
-              try {
-                fetchUrl = await getDownloadUrl(b.url)
-                const r2 = await fetch(fetchUrl, { cache: 'no-store' })
-                if (!r2.ok) return null
-                data = await r2.json()
-              } catch {
-                return null
-              }
-            }
-
+            // Use downloadUrl (pre-signed, works for both public and private stores)
+            // Fall back to url if downloadUrl is not present (older SDK versions)
+            const fetchUrl = b.downloadUrl || b.url
+            const r = await fetch(fetchUrl, { cache: 'no-store' })
+            if (!r.ok) return null
+            const data = await r.json()
             if (!data) return null
 
             // ── Backwards compatibility: old entries stored thumbnail as base64
@@ -65,46 +42,6 @@ export default async function handler(req, res) {
             // Ensure type field exists
             if (!data.type) {
               data.type = data.reelUrl ? 'reel' : 'carousel'
-            }
-
-            // For private stores, generate signed download URLs for slide images
-            // so the browser can display them in <img> tags
-            if (data.slideUrls?.length) {
-              data.slideUrls = await Promise.all(
-                data.slideUrls.map(async url => {
-                  try {
-                    // Try direct access first (public store)
-                    const probe = await fetch(url, { method: 'HEAD' })
-                    if (probe.ok) return url
-                    // Private — get signed URL
-                    return await getDownloadUrl(url)
-                  } catch {
-                    try { return await getDownloadUrl(url) } catch { return url }
-                  }
-                })
-              )
-            }
-
-            if (data.thumbnailUrl) {
-              try {
-                const probe = await fetch(data.thumbnailUrl, { method: 'HEAD' })
-                if (!probe.ok) {
-                  data.thumbnailUrl = await getDownloadUrl(data.thumbnailUrl)
-                }
-              } catch {
-                try { data.thumbnailUrl = await getDownloadUrl(data.thumbnailUrl) } catch {}
-              }
-            }
-
-            if (data.reelUrl) {
-              try {
-                const probe = await fetch(data.reelUrl, { method: 'HEAD' })
-                if (!probe.ok) {
-                  data.reelUrl = await getDownloadUrl(data.reelUrl)
-                }
-              } catch {
-                try { data.reelUrl = await getDownloadUrl(data.reelUrl) } catch {}
-              }
             }
 
             return { ...data, _metaUrl: b.url }
