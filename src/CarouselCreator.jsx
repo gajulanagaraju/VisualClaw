@@ -639,7 +639,9 @@ export default function CarouselCreator() {
   const [reelUrl, setReelUrl]       = useState(null)
   const [reelMime, setReelMime]     = useState('video/mp4')
   // Save-to-history state
-  const [savePhase, setSavePhase]   = useState(null) // null | 'saving' | 'saved' | 'error'
+  const [savePhase, setSavePhase]         = useState(null) // null | 'saving' | 'saved' | 'error' | 'error_msg'
+  const [saveError, setSaveError]         = useState('')
+  const [saveReelPhase, setSaveReelPhase] = useState(null) // null | 'saving' | 'saved' | 'error'
   // Ordered media parallel to rendered[] — tells reel which slots are videos
   const [orderedMedia, setOrderedMedia] = useState([])
   const fileRef = useRef(null)
@@ -752,9 +754,12 @@ export default function CarouselCreator() {
   const saveToHistory = async () => {
     if (!rendered.length || !result) return
     setSavePhase('saving')
+    setSaveError('')
     try {
-      const thumbnail = await makeThumbnail(rendered[0], 200)
-      const compressed = await Promise.all(rendered.map(url => compressForStorage(url, 600)))
+      // Compress slides to reasonable JPEG quality before uploading
+      // Each slide is uploaded as an individual file on the server — no base64-in-JSON
+      const thumbnail = await makeThumbnail(rendered[0], 300)
+      const compressed = await Promise.all(rendered.map(url => compressForStorage(url, 800)))
       const res = await fetch('/api/history-save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -770,11 +775,49 @@ export default function CarouselCreator() {
       const data = await res.json()
       if (!data.success) throw new Error(data.error || 'Save failed')
       setSavePhase('saved')
-      setTimeout(() => setSavePhase(null), 3000)
+      setTimeout(() => setSavePhase(null), 4000)
     } catch (e) {
       console.error('Save error:', e)
+      setSaveError(e.message || 'Save failed')
       setSavePhase('error')
-      setTimeout(() => setSavePhase(null), 3000)
+      setTimeout(() => { setSavePhase(null); setSaveError('') }, 5000)
+    }
+  }
+
+  const saveReelToCloud = async () => {
+    if (!reelUrl || !reelMime) return
+    setSaveReelPhase('saving')
+    try {
+      // Fetch the blob URL and convert to base64 for upload
+      const reelBlob = await fetch(reelUrl).then(r => r.blob())
+      const reelBase64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result.split(',')[1])
+        reader.onerror = reject
+        reader.readAsDataURL(reelBlob)
+      })
+      // Generate a thumbnail from the first rendered slide
+      const thumbnail = rendered.length ? await makeThumbnail(rendered[0], 300) : null
+      const res = await fetch('/api/history-save-reel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          platform, eventName,
+          caption: result?.fullCaption || '',
+          thumbnail,
+          mimeType: reelMime,
+          reelBase64,
+          createdAt: new Date().toISOString(),
+        }),
+      })
+      const data = await res.json()
+      if (!data.success) throw new Error(data.error || 'Reel save failed')
+      setSaveReelPhase('saved')
+      setTimeout(() => setSaveReelPhase(null), 4000)
+    } catch (e) {
+      console.error('Reel save error:', e)
+      setSaveReelPhase('error')
+      setTimeout(() => setSaveReelPhase(null), 5000)
     }
   }
 
@@ -890,7 +933,7 @@ export default function CarouselCreator() {
               <span>Designed Slides ({rendered.length})</span>
               <div style={{ display: 'flex', gap: 6 }}>
                 <button style={ss.dlAllBtn} onClick={downloadAll}>⬇ JPGs</button>
-                {/* Save to history */}
+                {/* Save to cloud history */}
                 <button
                   style={{
                     ...ss.dlAllBtn,
@@ -900,18 +943,22 @@ export default function CarouselCreator() {
                   }}
                   onClick={saveToHistory}
                   disabled={savePhase === 'saving' || savePhase === 'saved'}>
-                  {savePhase === 'saving' ? '⏳' : savePhase === 'saved' ? '✓ Saved' : savePhase === 'error' ? '✕ Failed' : '💾 Save'}
+                  {savePhase === 'saving' ? '⏳ Saving…' : savePhase === 'saved' ? '✓ Saved to Cloud' : savePhase === 'error' ? '✕ Failed' : '☁️ Save'}
                 </button>
               </div>
             </div>
 
+             {saveError && (
+              <div style={{ fontSize: 11, color: '#fca5a5', padding: '4px 2px 0', lineHeight: 1.5 }}>
+                ⚠️ {saveError}
+              </div>
+            )}
             <div style={ss.slidesRow}>
               {rendered.map((dataUrl, i) => (
                 <RenderedSlide key={i} dataUrl={dataUrl} index={i}
                   onDownload={downloadSlide} />
               ))}
             </div>
-
             {/* Caption */}
             <div style={ss.sLabel}>Full Caption</div>
             <div style={ss.captionCard}>
@@ -983,9 +1030,21 @@ export default function CarouselCreator() {
                     playsInline
                     style={ss.reelPreview}
                   />
-                  <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
                     <button style={{ ...ss.genBtn, background: 'linear-gradient(135deg,#065f46,#047857)', flex: 1, padding: '11px', marginBottom: 0 }} onClick={downloadReel}>
                       ⬇ Save Reel
+                    </button>
+                    {/* Save Reel to Cloud */}
+                    <button
+                      style={{
+                        ...ss.genBtn, flex: 1, padding: '11px', marginBottom: 0,
+                        background: saveReelPhase === 'saved' ? 'rgba(16,185,129,0.2)' : saveReelPhase === 'error' ? 'rgba(239,68,68,0.15)' : 'rgba(124,58,237,0.15)',
+                        border: `1px solid ${saveReelPhase === 'saved' ? 'rgba(16,185,129,0.4)' : saveReelPhase === 'error' ? 'rgba(239,68,68,0.3)' : 'rgba(124,58,237,0.3)'}`,
+                        color: saveReelPhase === 'saved' ? '#34d399' : saveReelPhase === 'error' ? '#fca5a5' : '#a78bfa',
+                      }}
+                      onClick={saveReelToCloud}
+                      disabled={saveReelPhase === 'saving' || saveReelPhase === 'saved'}>
+                      {saveReelPhase === 'saving' ? '⏳ Saving…' : saveReelPhase === 'saved' ? '✓ Saved to Cloud' : saveReelPhase === 'error' ? '✕ Failed' : '☁️ Save to Cloud'}
                     </button>
                     {isMobile() && (
                       <button
@@ -1007,7 +1066,7 @@ export default function CarouselCreator() {
                         📲 Share Reel
                       </button>
                     )}
-                    <button style={{ ...ss.genBtn, background: 'rgba(30,41,59,0.8)', border: '1px solid rgba(255,255,255,0.07)', color: '#94a3b8', flex: 0, padding: '11px 16px', marginBottom: 0 }} onClick={() => { setReelPhase(null); setReelUrl(null) }}>
+                    <button style={{ ...ss.genBtn, background: 'rgba(30,41,59,0.8)', border: '1px solid rgba(255,255,255,0.07)', color: '#94a3b8', flex: 0, padding: '11px 16px', marginBottom: 0 }} onClick={() => { setReelPhase(null); setReelUrl(null); setSaveReelPhase(null) }}>
                       ↺
                     </button>
                   </div>

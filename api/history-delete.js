@@ -11,6 +11,7 @@ export default async function handler(req, res) {
   if (!id) return res.status(400).json({ error: 'Missing id' })
 
   try {
+    // List all blobs with this id prefix (covers both meta.json and the folder contents)
     const { blobs } = await list({ prefix: `vc-history/${id}` })
     if (blobs.length > 0) {
       await del(blobs.map(b => b.url))

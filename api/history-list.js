@@ -8,7 +8,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { blobs } = await list({ prefix: 'vc-history/', limit: 200 })
+    // List all meta.json files (both carousel and reel entries)
+    const { blobs } = await list({ prefix: 'vc-history/', limit: 500 })
     const metaBlobs = blobs.filter(b => b.pathname.endsWith('.meta.json'))
 
     const items = (
@@ -16,7 +17,30 @@ export default async function handler(req, res) {
         metaBlobs.map(async b => {
           try {
             const r = await fetch(b.url, { cache: 'no-store' })
+            if (!r.ok) return null
             const data = await r.json()
+
+            // ── Backwards compatibility: old entries stored thumbnail as base64
+            // in the meta JSON under `thumbnail` field. New entries use `thumbnailUrl`.
+            // Normalise to always expose `thumbnailUrl`.
+            if (!data.thumbnailUrl && data.thumbnail) {
+              data.thumbnailUrl = data.thumbnail
+              delete data.thumbnail
+            }
+
+            // ── Backwards compatibility: old entries stored slides as base64
+            // array in a separate .slides.json file referenced by `slidesUrl`.
+            // New entries use `slideUrls` (array of CDN URLs).
+            // Expose a `legacySlidesUrl` flag so the UI knows how to load them.
+            if (!data.slideUrls && data.slidesUrl) {
+              data.legacySlidesUrl = data.slidesUrl
+            }
+
+            // Ensure type field exists
+            if (!data.type) {
+              data.type = data.reelUrl ? 'reel' : 'carousel'
+            }
+
             return { ...data, _metaUrl: b.url }
           } catch { return null }
         })
