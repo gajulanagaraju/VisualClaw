@@ -142,9 +142,12 @@ function WinnerSheet({ winner, onClose }) {
     <div
       style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'flex-end' }}
       onClick={e => e.target === e.currentTarget && onClose()}
+      onTouchMove={e => e.stopPropagation()}
     >
       <div style={{
         width: '100%', maxHeight: '88vh', overflowY: 'auto',
+        WebkitOverflowScrolling: 'touch',
+        overscrollBehavior: 'contain',
         background: 'linear-gradient(180deg, #0f172a 0%, #070b14 100%)',
         borderTop: `2px solid ${color}60`,
         borderRadius: '20px 20px 0 0',
@@ -444,7 +447,7 @@ export default function Winners() {
   const q = search.trim().toLowerCase()
 
   return (
-    <div style={{ background: C.bg, minHeight: '100vh', color: C.text, fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+    <div style={{ position: 'absolute', inset: 0, background: C.bg, color: C.text, fontFamily: 'system-ui, -apple-system, sans-serif', overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
 
       {/* Header */}
       <div style={{
