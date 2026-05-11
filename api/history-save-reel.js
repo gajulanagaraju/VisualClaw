@@ -1,11 +1,26 @@
 import { put } from '@vercel/blob'
 
+// Helper: try public upload first, fall back to private if store is private
+async function putAuto(path, data, opts) {
+  try {
+    return await put(path, data, { ...opts, access: 'public' })
+  } catch (err) {
+    if (err?.message?.includes('private store') || err?.message?.includes('private access')) {
+      // Store is private — omit access param (Vercel Blob default = private)
+      const { access: _a, ...rest } = opts
+      return await put(path, data, rest)
+    }
+    throw err
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end()
 
   if (!process.env.BLOB_READ_WRITE_TOKEN) {
     return res.status(503).json({
       error: 'Blob storage not configured. Add BLOB_READ_WRITE_TOKEN to your Vercel environment variables.',
+      note: 'blob_not_configured',
     })
   }
 
@@ -20,10 +35,10 @@ export default async function handler(req, res) {
   try {
     // ── 1. Upload the reel video file ─────────────────────────────────────────
     const reelBuf = Buffer.from(reelBase64, 'base64')
-    const reelBlob = await put(
+    const reelBlob = await putAuto(
       `vc-history/${id}/reel.${ext}`,
       reelBuf,
-      { access: 'public', contentType: mimeType || 'video/mp4', addRandomSuffix: false }
+      { contentType: mimeType || 'video/mp4', addRandomSuffix: false }
     )
 
     // ── 2. Upload thumbnail if provided ───────────────────────────────────────
@@ -32,10 +47,10 @@ export default async function handler(req, res) {
       try {
         const thumbBase64 = thumbnail.split(',')[1]
         const thumbBuf = Buffer.from(thumbBase64, 'base64')
-        const thumbBlob = await put(
+        const thumbBlob = await putAuto(
           `vc-history/${id}/thumbnail.jpg`,
           thumbBuf,
-          { access: 'public', contentType: 'image/jpeg', addRandomSuffix: false }
+          { contentType: 'image/jpeg', addRandomSuffix: false }
         )
         thumbnailUrl = thumbBlob.url
       } catch (thumbErr) {
@@ -56,15 +71,17 @@ export default async function handler(req, res) {
       type: 'reel', // distinguish from carousel entries
     }
 
-    await put(
+    await putAuto(
       `vc-history/${id}.meta.json`,
       JSON.stringify(meta),
-      { access: 'public', contentType: 'application/json', addRandomSuffix: false }
+      { contentType: 'application/json', addRandomSuffix: false }
     )
 
     res.status(200).json({ success: true, id, reelUrl: reelBlob.url })
   } catch (err) {
     console.error('Reel save error:', err?.message)
-    res.status(500).json({ error: `Reel save failed: ${err?.message || 'Check Blob storage is linked to this project.'}` })
+    res.status(500).json({
+      error: `Reel save failed: ${err?.message || 'Check Blob storage is linked to this project.'}`,
+    })
   }
 }

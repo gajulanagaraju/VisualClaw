@@ -12,6 +12,7 @@ export default async function handler(req, res) {
   if (!process.env.BLOB_READ_WRITE_TOKEN) {
     return res.status(503).json({
       error: 'Blob storage not configured. Add BLOB_READ_WRITE_TOKEN to your Vercel environment variables.',
+      note: 'blob_not_configured',
     })
   }
 
@@ -22,20 +23,45 @@ export default async function handler(req, res) {
   const id = Date.now().toString()
   const ts = createdAt || new Date().toISOString()
 
+  // Detect if the store is public or private by attempting a public upload first
+  // If it fails with "private store" error, fall back to no-access-param (private)
+  let storeIsPublic = true
+
   try {
     // ── 1. Upload each slide as an individual image file ──────────────────────
     // This avoids the 4.5 MB Vercel body limit that breaks base64-in-JSON storage
-    const slideUrls = await Promise.all(
-      slides.map(async (dataUrl, i) => {
-        const buf = dataUrlToBuffer(dataUrl)
-        const blob = await put(
-          `vc-history/${id}/slide_${String(i + 1).padStart(2, '0')}.jpg`,
-          buf,
-          { access: 'public', contentType: 'image/jpeg', addRandomSuffix: false }
+    let slideUrls
+    try {
+      slideUrls = await Promise.all(
+        slides.map(async (dataUrl, i) => {
+          const buf = dataUrlToBuffer(dataUrl)
+          const blob = await put(
+            `vc-history/${id}/slide_${String(i + 1).padStart(2, '0')}.jpg`,
+            buf,
+            { access: 'public', contentType: 'image/jpeg', addRandomSuffix: false }
+          )
+          return blob.url
+        })
+      )
+    } catch (pubErr) {
+      if (pubErr?.message?.includes('private store') || pubErr?.message?.includes('private access')) {
+        // Store is private — upload without access param (Vercel Blob default = private)
+        storeIsPublic = false
+        slideUrls = await Promise.all(
+          slides.map(async (dataUrl, i) => {
+            const buf = dataUrlToBuffer(dataUrl)
+            const blob = await put(
+              `vc-history/${id}/slide_${String(i + 1).padStart(2, '0')}.jpg`,
+              buf,
+              { contentType: 'image/jpeg', addRandomSuffix: false }
+            )
+            return blob.url
+          })
         )
-        return blob.url
-      })
-    )
+      } else {
+        throw pubErr
+      }
+    }
 
     // ── 2. Upload thumbnail as a separate image file ──────────────────────────
     let thumbnailUrl = null
@@ -45,7 +71,9 @@ export default async function handler(req, res) {
         const thumbBlob = await put(
           `vc-history/${id}/thumbnail.jpg`,
           thumbBuf,
-          { access: 'public', contentType: 'image/jpeg', addRandomSuffix: false }
+          storeIsPublic
+            ? { access: 'public', contentType: 'image/jpeg', addRandomSuffix: false }
+            : { contentType: 'image/jpeg', addRandomSuffix: false }
         )
         thumbnailUrl = thumbBlob.url
       } catch (thumbErr) {
@@ -63,19 +91,27 @@ export default async function handler(req, res) {
       slideCount: slideUrls.length,
       createdAt: ts,
       thumbnailUrl,
-      slideUrls,        // array of public CDN URLs — tiny JSON, no base64
+      slideUrls,        // array of CDN URLs — tiny JSON, no base64
       type: 'carousel', // distinguish from reel entries
+      storeIsPublic,    // flag so history-list knows if it needs to generate signed URLs
     }
 
     await put(
       `vc-history/${id}.meta.json`,
       JSON.stringify(meta),
-      { access: 'public', contentType: 'application/json', addRandomSuffix: false }
+      storeIsPublic
+        ? { access: 'public', contentType: 'application/json', addRandomSuffix: false }
+        : { contentType: 'application/json', addRandomSuffix: false }
     )
 
-    res.status(200).json({ success: true, id })
+    res.status(200).json({ success: true, id, storeIsPublic })
   } catch (err) {
     console.error('History save error:', err?.message)
-    res.status(500).json({ error: `Save failed: ${err?.message || 'Check Blob storage is linked to this project.'}` })
+    res.status(500).json({
+      error: `Save failed: ${err?.message || 'Check Blob storage is linked to this project.'}`,
+      hint: err?.message?.includes('private') 
+        ? 'Your Blob store uses private access. This is handled automatically — if you still see this error, check that BLOB_READ_WRITE_TOKEN is set correctly.'
+        : 'Ensure the Vercel Blob store is linked to this project in the Vercel dashboard.',
+    })
   }
 }

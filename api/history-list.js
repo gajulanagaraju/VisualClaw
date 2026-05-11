@@ -1,4 +1,4 @@
-import { list } from '@vercel/blob'
+import { list, get } from '@vercel/blob'
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).end()
@@ -16,13 +16,31 @@ export default async function handler(req, res) {
       await Promise.all(
         metaBlobs.map(async b => {
           try {
-            const r = await fetch(b.url, { cache: 'no-store' })
-            if (!r.ok) return null
-            const data = await r.json()
+            let data
+
+            // For private stores, b.url is a private URL that requires the token.
+            // Use @vercel/blob get() which handles auth automatically, then read the body.
+            try {
+              // First try direct fetch (works for public stores)
+              const r = await fetch(b.url, { cache: 'no-store' })
+              if (r.ok) {
+                data = await r.json()
+              } else {
+                throw new Error(`HTTP ${r.status}`)
+              }
+            } catch {
+              // Fallback: use @vercel/blob get() for private stores
+              const blobData = await get(b.pathname)
+              if (!blobData) return null
+              // get() returns a Blob object — read it as text
+              const text = await blobData.text()
+              data = JSON.parse(text)
+            }
+
+            if (!data) return null
 
             // ── Backwards compatibility: old entries stored thumbnail as base64
             // in the meta JSON under `thumbnail` field. New entries use `thumbnailUrl`.
-            // Normalise to always expose `thumbnailUrl`.
             if (!data.thumbnailUrl && data.thumbnail) {
               data.thumbnailUrl = data.thumbnail
               delete data.thumbnail
@@ -31,7 +49,6 @@ export default async function handler(req, res) {
             // ── Backwards compatibility: old entries stored slides as base64
             // array in a separate .slides.json file referenced by `slidesUrl`.
             // New entries use `slideUrls` (array of CDN URLs).
-            // Expose a `legacySlidesUrl` flag so the UI knows how to load them.
             if (!data.slideUrls && data.slidesUrl) {
               data.legacySlidesUrl = data.slidesUrl
             }
