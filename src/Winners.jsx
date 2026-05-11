@@ -447,7 +447,7 @@ export default function Winners() {
   const q = search.trim().toLowerCase()
 
   return (
-    <div style={{ position: 'absolute', inset: 0, background: C.bg, color: C.text, fontFamily: 'system-ui, -apple-system, sans-serif', overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', background: C.bg, color: C.text, fontFamily: 'system-ui, -apple-system, sans-serif', overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
 
       {/* Header */}
       <div style={{
