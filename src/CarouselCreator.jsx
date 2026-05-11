@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from 'react'
-import { dataUrlsToFiles, webShare, canShareFiles, copyToClipboard, downloadImages, openInstagram, openLinkedIn, openFacebook, openWhatsApp } from './shareUtils.js'
+import { canShareFiles, shareToInstagram, shareToLinkedIn, shareToFacebook, shareToWhatsApp, SHARE_INSTRUCTIONS, isMobile } from './shareUtils.js'
 import { loadConnections } from './SocialSettings.jsx'
 
 /* ── Compress image for storage ──────────────── */
@@ -512,62 +512,51 @@ function RenderedSlide({ dataUrl, index, onDownload }) {
 
 /* ── Share Panel ─────────────────────────────── */
 const SHARE_PLATFORMS = [
-  { key: 'instagram', label: 'Instagram', icon: '◎', color: '#E1306C' },
-  { key: 'linkedin',  label: 'LinkedIn',  icon: 'in', color: '#0A66C2' },
-  { key: 'facebook',  label: 'Facebook',  icon: 'f',  color: '#1877F2' },
-  { key: 'whatsapp',  label: 'WhatsApp',  icon: '💬', color: '#25D366' },
+  { key: 'instagram', label: 'Instagram', icon: '◎', color: '#E1306C',
+    hint: isMobile() ? 'Opens native share sheet or saves + opens app' : 'Downloads slides for Instagram' },
+  { key: 'linkedin',  label: 'LinkedIn',  icon: 'in', color: '#0A66C2',
+    hint: isMobile() ? 'Opens native share sheet or saves + opens app' : 'Downloads slides for LinkedIn' },
+  { key: 'facebook',  label: 'Facebook',  icon: 'f',  color: '#1877F2',
+    hint: 'Downloads slides + opens Facebook' },
+  { key: 'whatsapp',  label: 'WhatsApp',  icon: '💬', color: '#25D366',
+    hint: 'Opens WhatsApp with caption pre-filled' },
 ]
 
-function SharePanel({ rendered, caption, platform }) {
+const SHARE_FNS = {
+  instagram: shareToInstagram,
+  linkedin:  shareToLinkedIn,
+  facebook:  shareToFacebook,
+  whatsapp:  shareToWhatsApp,
+}
+
+function SharePanel({ rendered, caption }) {
   const [shareState, setShareState] = useState({}) // { platform: 'sharing'|'done'|'error' }
-  const [instruction, setInstruction] = useState(null)
+  const [activeInstr, setActiveInstr] = useState(null) // instructionKey string
+  const [activePlatform, setActivePlatform] = useState(null)
 
   const setStatus = (key, status) => setShareState(prev => ({ ...prev, [key]: status }))
 
   const doShare = async (target) => {
     setStatus(target, 'sharing')
-    setInstruction(null)
-
+    setActiveInstr(null)
+    setActivePlatform(null)
     try {
-      const files = await dataUrlsToFiles(rendered)
-
-      if (target === 'whatsapp') {
-        // WhatsApp: share text via wa.me, download images separately
-        await copyToClipboard(caption)
-        downloadImages(rendered, 'whatsapp')
-        setTimeout(() => openWhatsApp(caption), 800)
-        setStatus(target, 'done')
-        setInstruction({ platform: target, text: 'Images saved to device. Caption pre-filled in WhatsApp. Attach the saved images.' })
-        return
-      }
-
-      // Try Web Share API (native share sheet — works on iOS/Android)
-      const shared = await webShare(files, caption, 'TPC 2026 Carousel')
-      if (shared) {
-        setStatus(target, 'done')
-        return
-      }
-
-      // Fallback: download images + copy caption + open app
-      await copyToClipboard(caption)
-      downloadImages(rendered, target)
-
-      if (target === 'instagram') {
-        setInstruction({ platform: 'instagram', text: 'Photos saved to your device. Caption copied! Open Instagram → New Post → select the saved slides in order.' })
-        setTimeout(openInstagram, 600)
-      } else if (target === 'linkedin') {
-        setInstruction({ platform: 'linkedin', text: 'Photos saved. Caption copied! LinkedIn is opening — create a post and upload the slides.' })
-        setTimeout(openLinkedIn, 600)
-      } else if (target === 'facebook') {
-        setInstruction({ platform: 'facebook', text: 'Photos saved. Caption copied! Facebook is opening — create a post and upload the slides.' })
-        setTimeout(openFacebook, 600)
-      }
+      const shareFn = SHARE_FNS[target]
+      if (!shareFn) throw new Error('Unknown platform')
+      const { instructionKey } = await shareFn(rendered, caption)
       setStatus(target, 'done')
+      setActiveInstr(instructionKey)
+      setActivePlatform(target)
     } catch (e) {
       setStatus(target, 'error')
       console.error('Share error:', e)
     }
   }
+
+  const instr = activeInstr ? SHARE_INSTRUCTIONS[activeInstr] : null
+  const platformColor = activePlatform
+    ? (SHARE_PLATFORMS.find(p => p.key === activePlatform)?.color || '#38bdf8')
+    : '#38bdf8'
 
   return (
     <div style={sp.panel}>
@@ -575,32 +564,58 @@ function SharePanel({ rendered, caption, platform }) {
         <span style={sp.titleDot} />
         Share to Social Media
       </div>
+
+      {/* Platform buttons */}
       <div style={sp.grid}>
         {SHARE_PLATFORMS.map(p => {
           const state = shareState[p.key]
           return (
             <button key={p.key}
-              style={{ ...sp.shareBtn, borderColor: `${p.color}40`, ...(state === 'done' ? { background: `${p.color}18` } : {}) }}
+              style={{
+                ...sp.shareBtn,
+                borderColor: `${p.color}40`,
+                ...(state === 'done' ? { background: `${p.color}18`, borderColor: `${p.color}60` } : {}),
+                ...(state === 'sharing' ? { opacity: 0.7 } : {}),
+              }}
               onClick={() => doShare(p.key)}
               disabled={state === 'sharing'}>
               <span style={{ ...sp.shareBtnIcon, color: p.color, background: `${p.color}15` }}>
                 {state === 'sharing' ? '⏳' : state === 'done' ? '✓' : p.icon}
               </span>
-              <span style={sp.shareBtnLabel}>{p.label}</span>
+              <div style={sp.shareBtnRight}>
+                <span style={sp.shareBtnLabel}>{p.label}</span>
+                <span style={sp.shareBtnHint}>
+                  {state === 'done' ? 'Done!' : state === 'error' ? 'Try again' : p.hint}
+                </span>
+              </div>
             </button>
           )
         })}
       </div>
 
-      {instruction && (
-        <div style={sp.instruction}>
-          <div style={sp.instrText}>{instruction.text}</div>
+      {/* Step-by-step instruction card */}
+      {instr && (
+        <div style={{ ...sp.instrCard, borderColor: `${platformColor}30` }}>
+          <div style={sp.instrHeader}>
+            <span style={sp.instrIcon}>{instr.icon}</span>
+            <span style={{ ...sp.instrTitle, color: platformColor }}>{instr.title}</span>
+            <button style={sp.instrClose} onClick={() => { setActiveInstr(null); setActivePlatform(null) }}>✕</button>
+          </div>
+          <ol style={sp.instrList}>
+            {instr.steps.map((step, i) => (
+              <li key={i} style={sp.instrStep}>
+                <span style={{ ...sp.instrNum, background: `${platformColor}20`, color: platformColor }}>{i + 1}</span>
+                <span style={sp.instrStepText}>{step}</span>
+              </li>
+            ))}
+          </ol>
         </div>
       )}
 
+      {/* Capability badge */}
       {canShareFiles()
-        ? <div style={sp.webShareNote}>📱 Native share sheet available — tap a platform above</div>
-        : <div style={sp.webShareNote}>💾 Images will save to your device · caption auto-copied · app will open</div>
+        ? <div style={sp.badge}><span style={sp.badgeDot} />Native share sheet available on this device</div>
+        : <div style={sp.badge}><span style={{ ...sp.badgeDot, background: '#f59e0b' }} />Images save to device · caption auto-copied · app opens</div>
       }
     </div>
   )
@@ -970,12 +985,37 @@ export default function CarouselCreator() {
                   />
                   <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                     <button style={{ ...ss.genBtn, background: 'linear-gradient(135deg,#065f46,#047857)', flex: 1, padding: '11px', marginBottom: 0 }} onClick={downloadReel}>
-                      ⬇ Download Reel
+                      ⬇ Save Reel
                     </button>
+                    {isMobile() && (
+                      <button
+                        style={{ ...ss.genBtn, background: 'linear-gradient(135deg,#E1306C,#833ab4)', flex: 1, padding: '11px', marginBottom: 0 }}
+                        onClick={async () => {
+                          try {
+                            const reelBlob = await fetch(reelUrl).then(r => r.blob())
+                            const ext = reelMime.includes('webm') ? 'webm' : 'mp4'
+                            const file = new File([reelBlob], `tpc2026_reel.${ext}`, { type: reelMime })
+                            if (navigator.canShare?.({ files: [file] })) {
+                              await navigator.share({ files: [file], title: 'TPC 2026 Reel', text: result?.fullCaption || '' })
+                            } else {
+                              downloadReel()
+                            }
+                          } catch (e) {
+                            if (e.name !== 'AbortError') downloadReel()
+                          }
+                        }}>
+                        📲 Share Reel
+                      </button>
+                    )}
                     <button style={{ ...ss.genBtn, background: 'rgba(30,41,59,0.8)', border: '1px solid rgba(255,255,255,0.07)', color: '#94a3b8', flex: 0, padding: '11px 16px', marginBottom: 0 }} onClick={() => { setReelPhase(null); setReelUrl(null) }}>
                       ↺
                     </button>
                   </div>
+                  {isMobile() && (
+                    <div style={{ fontSize: 11, color: '#475569', marginTop: 8, lineHeight: 1.5 }}>
+                      💡 Tap “Share Reel” to open the native share sheet — select Instagram or LinkedIn to post directly
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -995,12 +1035,26 @@ export default function CarouselCreator() {
             </div>
 
             <div style={ss.howToPost}>
-              <div style={ss.howToTitle}>How to post</div>
+              <div style={ss.howToTitle}>📱 How to post on {platform === 'linkedin' ? 'LinkedIn' : platform === 'instagram' ? 'Instagram' : platform === 'facebook' ? 'Facebook' : 'WhatsApp'}</div>
               {platform === 'linkedin' && (
-                <div style={ss.howToText}>LinkedIn → Start a post → Upload all JPGs in order → Paste caption → Post</div>
+                <div style={ss.howToText}>
+                  {isMobile()
+                    ? <><strong style={{ color: '#e2e8f0' }}>On phone:</strong> Tap “LinkedIn” above → native share sheet opens → images go directly into LinkedIn. Or tap “Save Reel” then “Share Reel” to post a video.
+                      <br/><br/><strong style={{ color: '#e2e8f0' }}>Manual:</strong> LinkedIn → Start a post → tap image icon → select saved slides in order → paste caption → Post
+                    </>
+                    : <>LinkedIn → Start a post → Upload all JPGs in order → Paste caption → Post</>
+                  }
+                </div>
               )}
               {platform === 'instagram' && (
-                <div style={ss.howToText}>Instagram → New Post → tap + for multiple → select slides in order → paste caption</div>
+                <div style={ss.howToText}>
+                  {isMobile()
+                    ? <><strong style={{ color: '#e2e8f0' }}>On phone:</strong> Tap “Instagram” above → native share sheet opens → select Instagram → choose “Feed” → select all slides → paste caption.
+                      <br/><br/><strong style={{ color: '#e2e8f0' }}>Manual:</strong> Instagram → + New Post → tap the stack icon for multiple → select slides in order → paste caption → Share
+                    </>
+                    : <>Instagram → New Post → tap + for multiple → select slides in order → paste caption</>
+                  }
+                </div>
               )}
               {platform === 'facebook' && (
                 <div style={ss.howToText}>Facebook → Create post → Photo/Video → select all slides → paste caption</div>
@@ -1199,7 +1253,7 @@ const sp = {
   panel: {
     background: 'rgba(10,14,28,0.8)',
     border: '1px solid rgba(255,255,255,0.08)',
-    borderRadius: 18, padding: '14px 16px 12px',
+    borderRadius: 18, padding: '14px 16px 14px',
     marginBottom: 14,
     boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)',
   },
@@ -1214,28 +1268,60 @@ const sp = {
     boxShadow: '0 0 6px rgba(56,189,248,0.8)',
     flexShrink: 0,
   },
-  grid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 10 },
+  grid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 },
   shareBtn: {
     display: 'flex', alignItems: 'center', gap: 10,
-    padding: '10px 14px', borderRadius: 14,
+    padding: '10px 12px', borderRadius: 14,
     background: 'rgba(15,20,40,0.6)',
     border: '1.5px solid rgba(255,255,255,0.06)',
     cursor: 'pointer',
     transition: 'all 0.2s cubic-bezier(0.16,1,0.3,1)',
+    textAlign: 'left',
   },
   shareBtnIcon: {
-    width: 32, height: 32, borderRadius: 10, flexShrink: 0,
+    width: 34, height: 34, borderRadius: 10, flexShrink: 0,
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     fontSize: 14, fontWeight: 800,
   },
-  shareBtnLabel: { fontSize: 13, fontWeight: 700, color: '#e2e8f0' },
-  instruction: {
-    padding: '10px 12px', marginBottom: 8,
-    background: 'rgba(29,78,216,0.12)',
-    border: '1px solid rgba(59,130,246,0.2)',
-    borderRadius: 12,
-    animation: 'fadeInScale 0.3s ease both',
+  shareBtnRight: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 },
+  shareBtnLabel: { fontSize: 13, fontWeight: 700, color: '#e2e8f0', lineHeight: 1 },
+  shareBtnHint: { fontSize: 10, color: '#475569', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+  // Instruction card
+  instrCard: {
+    padding: '12px 14px', marginBottom: 10,
+    background: 'rgba(10,14,28,0.9)',
+    border: '1px solid rgba(56,189,248,0.2)',
+    borderRadius: 14,
+    animation: 'fadeInScale 0.3s cubic-bezier(0.16,1,0.3,1) both',
   },
-  instrText: { fontSize: 12, color: '#93c5fd', lineHeight: 1.6 },
-  webShareNote: { fontSize: 11, color: '#475569', textAlign: 'center' },
+  instrHeader: {
+    display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10,
+  },
+  instrIcon: { fontSize: 18, flexShrink: 0 },
+  instrTitle: { flex: 1, fontSize: 13, fontWeight: 800, lineHeight: 1.2 },
+  instrClose: {
+    width: 24, height: 24, borderRadius: '50%',
+    background: 'rgba(51,65,85,0.8)', color: '#94a3b8',
+    border: '1px solid rgba(255,255,255,0.08)',
+    fontSize: 10, flexShrink: 0,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
+  instrList: { listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 7 },
+  instrStep: { display: 'flex', alignItems: 'flex-start', gap: 8 },
+  instrNum: {
+    width: 20, height: 20, borderRadius: '50%', flexShrink: 0,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    fontSize: 10, fontWeight: 800, marginTop: 1,
+  },
+  instrStepText: { fontSize: 12, color: '#cbd5e1', lineHeight: 1.5 },
+  // Capability badge
+  badge: {
+    display: 'flex', alignItems: 'center', gap: 6,
+    fontSize: 11, color: '#475569', marginTop: 4,
+  },
+  badgeDot: {
+    width: 6, height: 6, borderRadius: '50%',
+    background: '#22c55e', flexShrink: 0,
+    boxShadow: '0 0 4px rgba(34,197,94,0.6)',
+  },
 }

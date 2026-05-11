@@ -10,14 +10,14 @@ const PLATFORMS = [
       if (/Android/.test(navigator.userAgent)) return 'intent://instagram.com/#Intent;scheme=https;package=com.instagram.android;end'
       return 'https://www.instagram.com'
     },
-    hint: 'Photos open in Instagram share sheet via Web Share API',
+    hint: 'On phone: native share sheet → pick Instagram. Falls back to save + open app.',
   },
   {
     key: 'linkedin', label: 'LinkedIn', icon: 'in', color: '#0A66C2',
     placeholder: 'Your LinkedIn name',
     field: 'linkedin',
     deepLink: () => 'https://www.linkedin.com/feed/?shareActive=true',
-    hint: 'Opens LinkedIn compose with caption pre-copied',
+    hint: 'On phone: native share sheet → pick LinkedIn. Falls back to save + open app.',
   },
   {
     key: 'facebook', label: 'Facebook', icon: 'f', color: '#1877F2',
@@ -102,7 +102,7 @@ export default function SocialSettings({ onClose }) {
         </div>
 
         <div style={s.note}>
-          ⚡ On your phone, tapping "Share to Instagram" will open the native share sheet — just tap Instagram to post your designed slides directly.
+          📲 On your phone, tapping “Instagram” or “LinkedIn” in the Carousel Creator will open the <strong>native share sheet</strong> (if supported) so you can pick the app and post directly. If the share sheet is unavailable, slides are saved to your device and the app opens automatically — step-by-step instructions appear on screen.
         </div>
       </div>
     </div>
