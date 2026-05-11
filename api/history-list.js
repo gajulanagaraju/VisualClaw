@@ -1,4 +1,4 @@
-import { list, get } from '@vercel/blob'
+import { list, getDownloadUrl } from '@vercel/blob'
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).end()
@@ -18,23 +18,32 @@ export default async function handler(req, res) {
           try {
             let data
 
-            // For private stores, b.url is a private URL that requires the token.
-            // Use @vercel/blob get() which handles auth automatically, then read the body.
+            // For public stores, b.url is directly accessible.
+            // For private stores, we need a signed download URL.
+            let fetchUrl = b.url
             try {
-              // First try direct fetch (works for public stores)
               const r = await fetch(b.url, { cache: 'no-store' })
               if (r.ok) {
                 data = await r.json()
+              } else if (r.status === 401 || r.status === 403) {
+                // Private store — get a signed download URL
+                fetchUrl = await getDownloadUrl(b.url)
+                const r2 = await fetch(fetchUrl, { cache: 'no-store' })
+                if (!r2.ok) return null
+                data = await r2.json()
               } else {
-                throw new Error(`HTTP ${r.status}`)
+                return null
               }
             } catch {
-              // Fallback: use @vercel/blob get() for private stores
-              const blobData = await get(b.pathname)
-              if (!blobData) return null
-              // get() returns a Blob object — read it as text
-              const text = await blobData.text()
-              data = JSON.parse(text)
+              // Network error — try signed URL as fallback
+              try {
+                fetchUrl = await getDownloadUrl(b.url)
+                const r2 = await fetch(fetchUrl, { cache: 'no-store' })
+                if (!r2.ok) return null
+                data = await r2.json()
+              } catch {
+                return null
+              }
             }
 
             if (!data) return null
@@ -56,6 +65,46 @@ export default async function handler(req, res) {
             // Ensure type field exists
             if (!data.type) {
               data.type = data.reelUrl ? 'reel' : 'carousel'
+            }
+
+            // For private stores, generate signed download URLs for slide images
+            // so the browser can display them in <img> tags
+            if (data.slideUrls?.length) {
+              data.slideUrls = await Promise.all(
+                data.slideUrls.map(async url => {
+                  try {
+                    // Try direct access first (public store)
+                    const probe = await fetch(url, { method: 'HEAD' })
+                    if (probe.ok) return url
+                    // Private — get signed URL
+                    return await getDownloadUrl(url)
+                  } catch {
+                    try { return await getDownloadUrl(url) } catch { return url }
+                  }
+                })
+              )
+            }
+
+            if (data.thumbnailUrl) {
+              try {
+                const probe = await fetch(data.thumbnailUrl, { method: 'HEAD' })
+                if (!probe.ok) {
+                  data.thumbnailUrl = await getDownloadUrl(data.thumbnailUrl)
+                }
+              } catch {
+                try { data.thumbnailUrl = await getDownloadUrl(data.thumbnailUrl) } catch {}
+              }
+            }
+
+            if (data.reelUrl) {
+              try {
+                const probe = await fetch(data.reelUrl, { method: 'HEAD' })
+                if (!probe.ok) {
+                  data.reelUrl = await getDownloadUrl(data.reelUrl)
+                }
+              } catch {
+                try { data.reelUrl = await getDownloadUrl(data.reelUrl) } catch {}
+              }
             }
 
             return { ...data, _metaUrl: b.url }

@@ -1,14 +1,17 @@
 import { put } from '@vercel/blob'
 
-// Helper: try public upload first, fall back to private if store is private
+// Try public upload first; if the store is private, retry with access: 'private'
 async function putAuto(path, data, opts) {
   try {
     return await put(path, data, { ...opts, access: 'public' })
   } catch (err) {
-    if (err?.message?.includes('private store') || err?.message?.includes('private access')) {
-      // Store is private — omit access param (Vercel Blob default = private)
-      const { access: _a, ...rest } = opts
-      return await put(path, data, rest)
+    if (
+      err?.message?.includes('private store') ||
+      err?.message?.includes('private access') ||
+      err?.message?.includes('Cannot use public access')
+    ) {
+      // Store is configured as private — explicitly use access: 'private'
+      return await put(path, data, { ...opts, access: 'private' })
     }
     throw err
   }
