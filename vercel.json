@@ -10,7 +10,8 @@
     "api/history-delete.js": { "maxDuration": 15 },
     "api/guide-update.js": { "maxDuration": 30 },
     "api/guide-items.js": { "maxDuration": 20 },
-    "api/guide-delete.js": { "maxDuration": 15 }
+    "api/guide-delete.js": { "maxDuration": 15 },
+    "api/social-activity.js": { "maxDuration": 30 }
   },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
