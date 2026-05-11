@@ -6,6 +6,7 @@
     "api/history-save.js": { "maxDuration": 60 },
     "api/history-save-reel.js": { "maxDuration": 60 },
     "api/history-list.js": { "maxDuration": 20 },
+    "api/history-proxy.js": { "maxDuration": 15 },
     "api/history-delete.js": { "maxDuration": 15 },
     "api/guide-update.js": { "maxDuration": 30 },
     "api/guide-items.js": { "maxDuration": 20 },

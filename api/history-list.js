@@ -3,13 +3,13 @@ import { list } from '@vercel/blob'
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).end()
 
-  if (!process.env.BLOB_READ_WRITE_TOKEN) {
+  const token = process.env.BLOB_READ_WRITE_TOKEN
+  if (!token) {
     return res.status(200).json({ items: [], note: 'blob_not_configured' })
   }
 
   try {
-    // List all blobs — for private stores, each blob object includes a `downloadUrl`
-    // which is a pre-signed URL valid for ~1 hour. Use that to fetch the content.
+    // List all blobs in the history prefix
     const { blobs } = await list({ prefix: 'vc-history/', limit: 500 })
     const metaBlobs = blobs.filter(b => b.pathname.endsWith('.meta.json'))
 
@@ -17,10 +17,13 @@ export default async function handler(req, res) {
       await Promise.all(
         metaBlobs.map(async b => {
           try {
-            // Use downloadUrl (pre-signed, works for both public and private stores)
-            // Fall back to url if downloadUrl is not present (older SDK versions)
-            const fetchUrl = b.downloadUrl || b.url
-            const r = await fetch(fetchUrl, { cache: 'no-store' })
+            // Private blobs require Authorization: Bearer <token> to access.
+            // The BLOB_READ_WRITE_TOKEN is available server-side so we can
+            // fetch the blob content directly using the auth header.
+            const r = await fetch(b.url, {
+              cache: 'no-store',
+              headers: { Authorization: `Bearer ${token}` },
+            })
             if (!r.ok) return null
             const data = await r.json()
             if (!data) return null
@@ -44,7 +47,12 @@ export default async function handler(req, res) {
               data.type = data.reelUrl ? 'reel' : 'carousel'
             }
 
-            return { ...data, _metaUrl: b.url }
+            // For private stores, the slideUrls, thumbnailUrl, and reelUrl
+            // are private blob URLs that the browser cannot access directly.
+            // We need to proxy them through our own API or generate signed URLs.
+            // For now, we pass them through — the History UI will use the
+            // /api/history-proxy endpoint to serve these images.
+            return { ...data, _metaUrl: b.url, _isPrivate: true }
           } catch { return null }
         })
       )

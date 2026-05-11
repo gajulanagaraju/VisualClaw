@@ -1,5 +1,16 @@
 import { useState, useEffect, useCallback } from 'react'
 
+// Route private Vercel Blob URLs through our server-side proxy so the browser
+// can display them. Public blob URLs (no 'private.' in hostname) pass through as-is.
+function proxyUrl(url) {
+  if (!url) return url
+  // Private blob URLs contain 'private.blob.vercel-storage.com'
+  if (url.includes('private.blob.vercel-storage.com') || url.includes('.private.')) {
+    return `/api/history-proxy?url=${encodeURIComponent(url)}`
+  }
+  return url
+}
+
 const PLATFORM_COLORS = {
   instagram: '#E1306C', linkedin: '#0A66C2',
   facebook: '#1877F2', whatsapp: '#25D366',
@@ -52,7 +63,7 @@ function DetailSheet({ item, onClose, onDelete }) {
     }
     // Legacy schema: slides stored as base64 array in a separate .slides.json
     if (item?.legacySlidesUrl) {
-      fetch(item.legacySlidesUrl)
+      fetch(proxyUrl(item.legacySlidesUrl))
         .then(r => r.json())
         .then(data => { setSlides(data.slides || []); setLoading(false) })
         .catch(() => setLoading(false))
@@ -67,7 +78,7 @@ function DetailSheet({ item, onClose, onDelete }) {
     slides.forEach((url, i) => {
       setTimeout(() => {
         const a = document.createElement('a')
-        a.href = url
+        a.href = proxyUrl(url)
         a.download = `vc_${item.platform}_slide_${String(i + 1).padStart(2, '0')}.jpg`
         a.target = '_blank'
         a.click()
@@ -79,7 +90,7 @@ function DetailSheet({ item, onClose, onDelete }) {
     if (!item?.reelUrl) return
     const ext = (item.reelMimeType || 'video/mp4').includes('webm') ? 'webm' : 'mp4'
     const a = document.createElement('a')
-    a.href = item.reelUrl
+    a.href = proxyUrl(item.reelUrl)
     a.download = `vc_${item.platform}_reel.${ext}`
     a.target = '_blank'
     a.click()
@@ -88,7 +99,7 @@ function DetailSheet({ item, onClose, onDelete }) {
   const shareReel = async () => {
     if (!item?.reelUrl) return
     try {
-      const blob = await fetch(item.reelUrl).then(r => r.blob())
+      const blob = await fetch(proxyUrl(item.reelUrl)).then(r => r.blob())
       const ext = (item.reelMimeType || 'video/mp4').includes('webm') ? 'webm' : 'mp4'
       const file = new File([blob], `vc_reel.${ext}`, { type: item.reelMimeType || 'video/mp4' })
       if (navigator.canShare?.({ files: [file] })) {
@@ -138,7 +149,7 @@ function DetailSheet({ item, onClose, onDelete }) {
         {isReel && item.reelUrl && (
           <div style={{ padding: '0 20px 16px' }}>
             <video
-              src={item.reelUrl}
+              src={proxyUrl(item.reelUrl)}
               controls
               loop
               playsInline
@@ -156,7 +167,7 @@ function DetailSheet({ item, onClose, onDelete }) {
                 ? <div style={{ fontSize: 13, color: '#475569', padding: '8px 0' }}>Slides not available</div>
                 : (slides || []).map((url, i) => (
                   <div key={i} style={ds.slideWrap}>
-                    <img src={url} alt={`Slide ${i+1}`} style={ds.slideThumb} />
+                    <img src={proxyUrl(url)} alt={`Slide ${i+1}`} style={ds.slideThumb} />
                     <div style={ds.slideNum}>{i + 1}</div>
                   </div>
                 ))
@@ -351,7 +362,7 @@ export default function History() {
             {filteredItems.map((item, idx) => {
               const color = PLATFORM_COLORS[item.platform] || '#38bdf8'
               const isReel = item.type === 'reel'
-              const thumbUrl = item.thumbnailUrl || null
+              const thumbUrl = item.thumbnailUrl ? proxyUrl(item.thumbnailUrl) : null
               return (
                 <button
                   key={item.id}
@@ -363,7 +374,7 @@ export default function History() {
                   onClick={() => setExpanded(item)}>
                   {/* Thumbnail */}
                   {thumbUrl
-                    ? <img src={thumbUrl} alt="" style={h.cardThumb} />
+                    ? <img src={thumbUrl} alt="" style={h.cardThumb} loading="lazy" />
                     : <div style={{ ...h.cardThumb, background: isReel ? 'rgba(168,85,247,0.1)' : `${color}15`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28 }}>
                         {isReel ? '🎬' : (PLATFORM_ICONS[item.platform] || '🖼')}
                       </div>
